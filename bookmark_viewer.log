@@ -1,0 +1,27 @@
+2025-05-02 13:13:03,314 - INFO - ==================== Bookmark Viewer Start ====================
+2025-05-02 13:14:41,491 - INFO - ==================== Bookmark Viewer Start ====================
+2025-05-02 13:16:18,874 - INFO - ==================== Bookmark Viewer Start ====================
+2025-05-02 13:16:18,933 - CRITICAL - Unhandled exception: 'PySide6.QtWidgets.QLabel' object has no attribute 'setReadOnly'
+2025-05-02 13:18:40,117 - INFO - ==================== Bookmark Viewer Start ====================
+2025-05-02 13:18:40,185 - CRITICAL - Unhandled exception: Error calling Python override of QWidget::eventFilter(): 'PySide6.QtCore.QEvent' object has no attribute 'Leave'
+Traceback (most recent call last):
+  File "C:\Users\cfriedberg\OneDrive - Aledade, Inc\Desktop\My Local Scripts\dg_bookmarks_viewer\dgbookmarksviewer.py", line 567, in <module>
+    window = FloatingBookmarksWindow()
+  File "C:\Users\cfriedberg\OneDrive - Aledade, Inc\Desktop\My Local Scripts\dg_bookmarks_viewer\dgbookmarksviewer.py", line 187, in __init__
+    self.apply_styles()  # Apply styles.
+    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\cfriedberg\OneDrive - Aledade, Inc\Desktop\My Local Scripts\dg_bookmarks_viewer\dgbookmarksviewer.py", line 226, in apply_styles
+    self.setStyleSheet("""
+    ~~~~~~~~~~~~~~~~~~^^^^
+        FloatingBookmarksWindow {
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<122 lines>...
+    
+    
+    """)
+    ^^^^
+  File "C:\Users\cfriedberg\OneDrive - Aledade, Inc\Desktop\My Local Scripts\dg_bookmarks_viewer\dgbookmarksviewer.py", line 220, in eventFilter
+    if event.type() == event.Leave:
+                       ^^^^^^^^^^^
+AttributeError: Error calling Python override of QWidget::eventFilter(): 'PySide6.QtCore.QEvent' object has no attribute 'Leave'
+2025-05-02 13:20:44,518 - INFO - ==================== Bookmark Viewer Start ====================
