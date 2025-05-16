@@ -6,27 +6,120 @@ import shutil
 from xml.etree import ElementTree as ET
 import logging
 import subprocess
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
     QLabel, QDialog, QPushButton, QFileDialog, QMenu, QMessageBox, QTextEdit, QSplitter,
     QAbstractItemView, QMenuBar, QSlider, QMainWindow, QSystemTrayIcon, QStyledItemDelegate, QStyle,
-    QRadioButton, QComboBox, QButtonGroup, QDialogButtonBox
+    QRadioButton, QComboBox, QButtonGroup, QDialogButtonBox, QAction, QCheckBox
 )
-from PySide6.QtCore import (
-    Qt, QSize, QPoint, QSettings, QStandardPaths, QRect, Signal, Slot,
-    QItemSelectionModel # <<<--- ADD THIS
+from PyQt5.QtCore import (
+    Qt, QSize, QPoint, QSettings, QStandardPaths, QRect, pyqtSignal as Signal, pyqtSlot as Slot,
+    QItemSelectionModel 
 )
-from PySide6.QtGui import (
-    QAction, QColor, QFont, QGuiApplication, QIcon, QPainter, QTextDocument, QFontMetrics,
-    QKeyEvent, QCursor, QTextCharFormat, QTextCursor
+from PyQt5.QtGui import (
+    QColor, QFont, QGuiApplication, QIcon, QPainter, QTextDocument, QFontMetrics,
+    QKeyEvent, QCursor, QTextCharFormat, QTextCursor, QKeySequence
 )
+# QScintilla imports
+from PyQt5.Qsci import QsciScintilla, QsciLexerSQL, QsciAPIs
+from PyQt5.QtGui import QFontDatabase
+# --- Custom SQL Syntax Highlighter ---
+from PyQt5.QtGui import QSyntaxHighlighter
+class SQLSyntaxHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.highlighting_rules = []
+        
+        # SQL Keywords
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor("#569CD6"))  # Blue for keywords
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+        
+        keywords = [
+            "\\bSELECT\\b", "\\bFROM\\b", "\\bWHERE\\b", "\\bJOIN\\b", "\\bLEFT\\b", "\\bRIGHT\\b", 
+            "\\bINNER\\b", "\\bOUTER\\b", "\\bGROUP\\s+BY\\b", "\\bORDER\\s+BY\\b", "\\bHAVING\\b", 
+            "\\bLIMIT\\b", "\\bOFFSET\\b", "\\bUNION\\b", "\\bINSERT\\b", "\\bUPDATE\\b", "\\bDELETE\\b", 
+            "\\bCREATE\\b", "\\bALTER\\b", "\\bDROP\\b", "\\bTABLE\\b", "\\bINDEX\\b", "\\bVIEW\\b", 
+            "\\bAS\\b", "\\bON\\b", "\\bAND\\b", "\\bOR\\b", "\\bNOT\\b", "\\bIN\\b", "\\bBETWEEN\\b", 
+            "\\bLIKE\\b", "\\bIS\\s+NULL\\b", "\\bIS\\s+NOT\\s+NULL\\b", "\\bASC\\b", "\\bDESC\\b", 
+            "\\bDISTINCT\\b", "\\bCOUNT\\b", "\\bSUM\\b", "\\bAVG\\b", "\\bMIN\\b", "\\bMAX\\b"
+        ]
+        
+        # Add keyword patterns
+        for pattern in keywords:
+            self.highlighting_rules.append((pattern, keyword_format))
+        
+        # String formats
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor("#CE9178"))  # Brown for strings
+        self.highlighting_rules.append(("'[^']*'", string_format))
+        self.highlighting_rules.append(("\"[^\"]*\"", string_format))
+        
+        # Number format
+        number_format = QTextCharFormat()
+        number_format.setForeground(QColor("#B5CEA8"))  # Green for numbers
+        self.highlighting_rules.append(("\\b\\d+\\b", number_format))
+        
+        # Comment format (single line)
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor("#6A9955"))  # Green for comments
+        self.highlighting_rules.append(("--[^\n]*", comment_format))
+        
+        # Operator format
+        operator_format = QTextCharFormat()
+        operator_format.setForeground(QColor("#D7BA7D"))  # Gold for operators
+        operators = ["=", "<", ">", "<=", ">=", "<>", "!=", "\\+", "-", "\\*", "/", "%"]
+        for op in operators:
+            self.highlighting_rules.append((op, operator_format))
+        
+        # Multi-line comment format (stored separately as it needs special handling)
+        self.multi_line_comment_format = QTextCharFormat()
+        self.multi_line_comment_format.setForeground(QColor("#6A9955"))
+        self.comment_start_expression = r"/\*"
+        self.comment_end_expression = r"\*/"
+        
+    def highlightBlock(self, text):
+        # Apply single-line rules
+        for pattern, format in self.highlighting_rules:
+            import re
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                start = match.start()
+                length = match.end() - match.start()
+                self.setFormat(start, length, format)
+        
+        # Handle multi-line comments
+        self.setCurrentBlockState(0)
+        
+        start_index = 0
+        if self.previousBlockState() != 1:
+            import re
+            match = re.search(self.comment_start_expression, text)
+            if match:
+                start_index = match.start()
+            else:
+                start_index = -1
+        
+        while start_index >= 0:
+            import re
+            end_match = re.search(self.comment_end_expression, text[start_index:])
+            if end_match:
+                end_index = start_index + end_match.end()
+                comment_length = end_index - start_index
+                self.setFormat(start_index, comment_length, self.multi_line_comment_format)
+                start_index = text.find("/*", end_index)
+            else:
+                # Comment continues to next block
+                self.setCurrentBlockState(1)
+                comment_length = len(text) - start_index
+                self.setFormat(start_index, comment_length, self.multi_line_comment_format)
+                break
 
 # --- Application Metadata and Data Folder Setup ---
-APP_NAME = "DGBookmarksViewer"
+APP_NAME = "DQV"  # Changed from "DGBookmarksViewer" to "DQV"
 ORG_NAME = "MyLocalScripts"
-QApplication.setOrganizationName(ORG_NAME)
-QApplication.setApplicationName(APP_NAME)
-APP_DATA_DIR = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+# QApplication organization and app name will be set after creating the application instance
+APP_DATA_DIR = os.path.join(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation), APP_NAME)
 if not APP_DATA_DIR:
     # Fallback if AppDataLocation is not writable/available
     if getattr(sys, 'frozen', False): # PyInstaller bundle
@@ -42,9 +135,10 @@ CONFIG_DIR = os.path.join(APP_DATA_DIR, "configs")
 BOOKMARKS_COPY_DIR = os.path.join(APP_DATA_DIR, "bookmarks")
 ICON_DIR = os.path.join(APP_DATA_DIR, "icons")
 HELP_DIR = os.path.join(APP_DATA_DIR, "help")
+INTERNAL_VAULT_DIR = os.path.join(APP_DATA_DIR, "query_vault")  # Directory for storing internal queries
 
 # Create directories if they don't exist
-for directory in [APP_DATA_DIR, LOG_DIR, CONFIG_DIR, BOOKMARKS_COPY_DIR, ICON_DIR, HELP_DIR]:
+for directory in [APP_DATA_DIR, LOG_DIR, CONFIG_DIR, BOOKMARKS_COPY_DIR, ICON_DIR, HELP_DIR, INTERNAL_VAULT_DIR]:
     try:
         os.makedirs(directory, exist_ok=True)
     except OSError as e:
@@ -58,9 +152,14 @@ LAST_BOOKMARKS_COPY = os.path.join(BOOKMARKS_COPY_DIR, "last_bookmarks_copy.xml"
 MAIN_ICON_FILE = os.path.join(ICON_DIR, "app_icon.ico")
 TRAY_ICON_FILE = os.path.join(ICON_DIR, "tray_icon.ico")
 HELP_LOCATIONS_FILE = os.path.join(HELP_DIR, "help_locations.txt")
+INTERNAL_VAULT_FILE = os.path.join(INTERNAL_VAULT_DIR, "query_vault.json")  # File for storing internal queries
 
 # Define default DataGrip path (adjust if necessary)
 DEFAULT_DATAGRIP_PATH = r"C:\Users\cfriedberg\AppData\Local\JetBrains\DataGrip 2024.1.4\bin\datagrip64.exe"
+
+# Constants for data source modes
+SOURCE_DATAGRIP = "datagrip"
+SOURCE_INTERNAL = "internal"
 
 # --- Logging Setup ---
 def setup_logging():
@@ -119,6 +218,8 @@ class AppSettings:
             self.settings['transparency'] = 1.0 # Default to fully opaque
         if 'font_size' not in self.settings:
             self.settings['font_size'] = "12" # Default font size
+        if 'data_source' not in self.settings:
+            self.settings['data_source'] = SOURCE_DATAGRIP # Default to DataGrip source for backward compatibility
 
     def save_settings(self):
         try:
@@ -184,6 +285,151 @@ class UsageCounts:
         self.counts = {}
         logging.info("All usage counts cleared.")
         # Note: save_counts() needs to be called explicitly after clearing if persistence is desired immediately.
+
+# --- Query Vault for Internal Storage ---
+class QueryVault:
+    def __init__(self):
+        self.vault_path = INTERNAL_VAULT_FILE
+        self.queries = []
+        self.load_vault()
+        
+    def load_vault(self):
+        """Load internal queries from the vault file."""
+        if os.path.exists(self.vault_path):
+            try:
+                with open(self.vault_path, 'r', encoding='utf-8') as f:
+                    self.queries = json.load(f)
+                logging.info(f"Internal query vault loaded from {self.vault_path}, {len(self.queries)} queries found")
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding vault JSON from {self.vault_path}: {e}", exc_info=True)
+                self.queries = [] # Reset to empty on decode error
+            except Exception as e:
+                logging.error(f"Error loading vault from {self.vault_path}: {e}", exc_info=True)
+                self.queries = []
+        else:
+            logging.info(f"Query vault file not found at {self.vault_path}. Starting with empty vault.")
+            self.queries = []
+            
+    def save_vault(self):
+        """Save internal queries to the vault file."""
+        try:
+            os.makedirs(os.path.dirname(self.vault_path), exist_ok=True)
+            with open(self.vault_path, 'w', encoding='utf-8') as f:
+                json.dump(self.queries, f, indent=4, ensure_ascii=False)
+            logging.info(f"Query vault saved to {self.vault_path}, {len(self.queries)} queries")
+        except Exception as e:
+            logging.error(f"Error saving query vault to {self.vault_path}: {e}", exc_info=True)
+            
+    def get_queries(self):
+        """Return a copy of all queries."""
+        return list(self.queries)
+    
+    def add_query(self, query_data):
+        """Add a new query to the vault."""
+        if not isinstance(query_data, dict):
+            logging.error(f"Cannot add query: data is not a dictionary")
+            return False
+            
+        # Ensure the query has a unique ID
+        if 'id' not in query_data:
+            # Generate a unique ID if none exists
+            import uuid
+            query_data['id'] = str(uuid.uuid4())
+            
+        # Add timestamp if not present
+        if 'created_at' not in query_data:
+            from datetime import datetime
+            query_data['created_at'] = datetime.now().isoformat()
+            
+        # Add to vault
+        self.queries.append(query_data)
+        logging.info(f"Added query '{query_data.get('title', 'Untitled')}' to vault with ID {query_data['id']}")
+        return True
+        
+    def update_query(self, query_id, updated_data):
+        """Update an existing query by ID."""
+        for i, query in enumerate(self.queries):
+            if query.get('id') == query_id:
+                # Update fields while preserving ID and created_at
+                query_id = query['id']  # Preserve ID
+                created_at = query.get('created_at')  # Preserve creation time
+                
+                # Update with new data
+                self.queries[i] = updated_data
+                
+                # Restore preserved fields
+                self.queries[i]['id'] = query_id
+                if created_at:
+                    self.queries[i]['created_at'] = created_at
+                
+                # Add modified timestamp
+                from datetime import datetime
+                self.queries[i]['modified_at'] = datetime.now().isoformat()
+                
+                logging.info(f"Updated query with ID {query_id}")
+                return True
+                
+        logging.warning(f"Failed to update query: No query found with ID {query_id}")
+        return False
+        
+    def delete_query(self, query_id):
+        """Delete a query by ID."""
+        initial_count = len(self.queries)
+        self.queries = [q for q in self.queries if q.get('id') != query_id]
+        
+        if len(self.queries) < initial_count:
+            logging.info(f"Deleted query with ID {query_id}")
+            return True
+        else:
+            logging.warning(f"Failed to delete query: No query found with ID {query_id}")
+            return False
+            
+    def get_query_by_id(self, query_id):
+        """Get a query by ID."""
+        for query in self.queries:
+            if query.get('id') == query_id:
+                return query
+        return None
+        
+    def get_all_labels(self):
+        """Get a list of all unique labels used across all queries."""
+        labels = set()
+        for query in self.queries:
+            query_labels = query.get('labels', [])
+            if isinstance(query_labels, list):
+                labels.update(query_labels)
+        return sorted(list(labels))
+        
+    def add_label_to_query(self, query_id, label):
+        """Add a label to a query."""
+        for query in self.queries:
+            if query.get('id') == query_id:
+                if 'labels' not in query:
+                    query['labels'] = []
+                if label not in query['labels']:
+                    query['labels'].append(label)
+                    from datetime import datetime
+                    query['modified_at'] = datetime.now().isoformat()
+                    logging.info(f"Added label '{label}' to query {query_id}")
+                    return True
+                return True  # Label already exists, still success
+        return False
+        
+    def remove_label_from_query(self, query_id, label):
+        """Remove a label from a query."""
+        for query in self.queries:
+            if query.get('id') == query_id:
+                if 'labels' in query and label in query['labels']:
+                    query['labels'].remove(label)
+                    from datetime import datetime
+                    query['modified_at'] = datetime.now().isoformat()
+                    logging.info(f"Removed label '{label}' from query {query_id}")
+                    return True
+        return False
+        
+    def get_queries_by_label(self, label):
+        """Get all queries with a specific label."""
+        return [query for query in self.queries if 'labels' in query and label in query['labels']]
 
 # --- Helper Functions ---
 def parse_bookmarks_xml(file_path):
@@ -301,82 +547,126 @@ class BookmarkDelegate(QStyledItemDelegate):
     COUNT_BOX_WIDTH = 40 # Fixed width for the usage count box
     TEXT_SPACING = 8 # Space between count box and title text
     FIXED_ITEM_HEIGHT_FACTOR = 1.5 # Multiplier for font height to get base item height
-
+    LABEL_MARGIN = 4  # Margin between labels
+    LABEL_PADDING = 4  # Padding inside each label
+    LABEL_COLORS = {
+        "Critical": QColor(255, 0, 0, 80),  # Red with transparency
+        "Draft": QColor(255, 165, 0, 80),   # Orange with transparency
+        "Final": QColor(0, 128, 0, 80),     # Green with transparency
+        # Default color for other labels will be handled dynamically
+    }
+    
     def calculate_fixed_height(self, font):
-        """Calculates the fixed item height based on font metrics."""
-        fm = QFontMetrics(font)
-        # Base height on font, add padding for top/bottom
-        return int((fm.height() * self.FIXED_ITEM_HEIGHT_FACTOR) + (self.ITEM_PADDING * 1.5))
-
+        # Calculate a consistent height based on font metrics
+        font_height = QFontMetrics(font).height()
+        return int(font_height * self.FIXED_ITEM_HEIGHT_FACTOR)
+        
     def paint(self, painter: QPainter, option, index):
         # Get bookmark data from the item's UserRole
-        bm = index.data(Qt.ItemDataRole.UserRole)
-        if not bm or not isinstance(bm, dict):
-            # If data is missing or not a dict, fall back to default painting
+        bookmark_data = index.data(Qt.ItemDataRole.UserRole)
+        if not bookmark_data or not isinstance(bookmark_data, dict):
+            # If no valid bookmark data, fall back to standard delegate painting
             super().paint(painter, option, index)
             return
-
-        count = bm.get('count', 0)
-        title = bm.get('title', 'No Title')
-        fixed_h = self.calculate_fixed_height(option.font) # Use calculated height
-
-        painter.save() # Save painter state
-
-        # Determine background and text colors based on state
-        palette = option.palette
-        bg_col = palette.base().color() # Default background
-        txt_col = palette.text().color() # Default text
-
+            
+        # Get title
+        title = bookmark_data.get('title', 'Untitled')
+        
+        # Get usage count
+        count = bookmark_data.get('count', 0)
+        
+        # Get labels (if any)
+        labels = bookmark_data.get('labels', [])
+        
+        # Calculate item rect with padding
+        item_rect = option.rect.adjusted(self.ITEM_PADDING, self.ITEM_PADDING, 
+                                       -self.ITEM_PADDING, -self.ITEM_PADDING)
+                                       
+        # Setup painter based on item state (selected, hover, etc.)
+        painter.save()
+        
+        # Draw background rect based on selection state
         if option.state & QStyle.StateFlag.State_Selected:
-            bg_col = palette.highlight().color()
-            txt_col = palette.highlightedText().color()
-        elif index.row() % 2 == 0: # Alternating row colors
-             bg_col = QColor("#3c3c3c") # Slightly darker
+            painter.fillRect(option.rect, option.palette.highlight())
+            painter.setPen(option.palette.highlightedText().color())
         else:
-             bg_col = QColor("#4a4a4a") # Slightly lighter
-
-        # Add hover effect if not selected
-        if option.state & QStyle.StateFlag.State_MouseOver and not (option.state & QStyle.StateFlag.State_Selected):
-            bg_col = bg_col.lighter(115) # Lighten on hover
-
-        # Fill background and draw bottom border
-        painter.fillRect(option.rect, bg_col)
-        painter.setPen(palette.midlight().color()) # Use a subtle color for the line
-        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
-
-        # Calculate rects for count box and text area
-        fm = option.fontMetrics
-        count_h = fm.height() + 4 # Make count box slightly taller than text
-        # Center count box vertically
-        count_rect = QRect(option.rect.left() + self.ITEM_PADDING // 2,
-                           option.rect.top() + (option.rect.height() - count_h) // 2,
-                           self.COUNT_BOX_WIDTH, count_h)
-
-        text_l = count_rect.right() + self.TEXT_SPACING
-        text_rect = QRect(text_l, option.rect.top(),
-                          option.rect.width() - text_l - self.ITEM_PADDING // 2,
-                          option.rect.height())
-        if text_rect.width() < 0: text_rect.setWidth(0) # Prevent negative width
-
-        # Draw count box background and text
-        painter.fillRect(count_rect, QColor("#666666")) # Dark grey background for count
-        painter.setPen(QColor("#ffffff")) # White text for count
-        painter.setFont(option.font)
-        painter.drawText(count_rect, Qt.AlignmentFlag.AlignCenter, str(count))
-
-        # Draw the main bookmark title (elided if too long)
-        painter.setPen(txt_col) # Use the determined text color
-        painter.setFont(option.font)
-        elided_txt = fm.elidedText(title, Qt.TextElideMode.ElideRight, text_rect.width())
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_txt)
-
-        painter.restore() # Restore painter state
-
+            painter.setPen(option.palette.text().color())
+            
+        # Draw the usage count box on the left
+        count_box_rect = QRect(item_rect.left(), item_rect.top(), 
+                             self.COUNT_BOX_WIDTH, item_rect.height())
+        # Use a lighter background for count                  
+        count_bg_color = option.palette.alternateBase().color()
+        painter.fillRect(count_box_rect, count_bg_color)
+        painter.drawRect(count_box_rect) # Draw border
+        
+        # Draw count text
+        painter.drawText(count_box_rect, Qt.AlignmentFlag.AlignCenter, str(count))
+        
+        # Set up text rect to right of count box
+        text_rect = QRect(count_box_rect.right() + self.TEXT_SPACING, 
+                        item_rect.top(), 
+                        item_rect.width() - self.COUNT_BOX_WIDTH - self.TEXT_SPACING,
+                        item_rect.height())
+                        
+        # Draw title text, elide if necessary
+        font = option.font
+        font_metrics = QFontMetrics(font)
+        elided_title = font_metrics.elidedText(
+            title, 
+            Qt.TextElideMode.ElideRight, 
+            text_rect.width()
+        )
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided_title)
+        
+        # Draw labels if present
+        if labels and isinstance(labels, list):
+            # Start from the right side
+            label_x = option.rect.right() - self.ITEM_PADDING
+            label_y = option.rect.top() + self.ITEM_PADDING
+            
+            # Smaller font for labels
+            label_font = QFont(option.font)
+            label_font.setPointSize(max(8, option.font.pointSize() - 2))
+            painter.setFont(label_font)
+            
+            # Draw each label from right to left
+            for label in labels:
+                label_text = str(label)
+                label_width = font_metrics.horizontalAdvance(label_text) + 2 * self.LABEL_PADDING
+                
+                # Determine label color
+                if label_text in self.LABEL_COLORS:
+                    label_color = self.LABEL_COLORS[label_text]
+                else:
+                    # Generate a color based on the label text
+                    # Use a hash function to get a consistent color for the same label
+                    hash_val = sum(ord(c) for c in label_text)
+                    hue = hash_val % 360
+                    # Use HSV to generate a consistent pastel color
+                    from PyQt5.QtGui import QColor
+                    label_color = QColor()
+                    label_color.setHsv(hue, 180, 240, 80)  # Light pastel with transparency
+                
+                # Draw label background
+                label_rect = QRect(label_x - label_width, label_y, 
+                                 label_width, label_font.pointSize() + 2 * self.LABEL_PADDING)
+                painter.fillRect(label_rect, label_color)
+                painter.drawRect(label_rect)
+                
+                # Draw label text
+                painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label_text)
+                
+                # Move to the next label position (to the left)
+                label_x -= (label_width + self.LABEL_MARGIN)
+        
+        painter.restore()
+    
     def sizeHint(self, option, index):
         # Return the calculated fixed height and base width
-        fixed_h = self.calculate_fixed_height(option.font)
-        base_w = super().sizeHint(option, index).width() # Get default width hint
-        return QSize(base_w, fixed_h)
+        fixed_height = self.calculate_fixed_height(option.font)
+        # Standard width calculation - let the view determine this
+        return QSize(0, fixed_height)
 
 # --- Custom List Widget for Key Press Handling ---
 class CustomListWidget(QListWidget):
@@ -519,40 +809,212 @@ class TrayCopyDialog(QDialog):
 
 # --- Main Application Window ---
 class FloatingBookmarksWindow(QMainWindow):
-    """Main window class for the DataGrip Bookmarks Viewer."""
+    """Main application window for displaying and interacting with bookmarks/queries."""
+    
+    def create_actions(self):
+        """Creates all actions for menus, toolbars, and tray icon."""
+        from PyQt5.QtWidgets import QAction
+        from PyQt5.QtGui import QKeySequence
+
+        # Create window actions
+        self.show_window_action = QAction("Show Window", self)
+        self.show_window_action.triggered.connect(self.show_window)
+
+        self.hide_window_action = QAction("Hide to Tray", self)
+        self.hide_window_action.triggered.connect(self.hide_to_tray)
+
+        self.tray_copy_sql_action = QAction("Copy SQL to Clipboard", self)
+        self.tray_copy_sql_action.triggered.connect(self.copy_current_query_to_clipboard)
+
+        self.exit_action = QAction("Exit DQV", self)
+        self.exit_action.triggered.connect(self.close_app)
+        
+        # Add bookmark count menu action
+        self.bookmark_count_menu_action = QAction("Bookmarks: 0", self)
+        self.bookmark_count_menu_action.setEnabled(False)  # This is just an indicator, not clickable
+
+        # Add dark mode toggle action
+        self.toggle_theme_action = QAction("Toggle Dark Mode", self)
+        self.toggle_theme_action.setCheckable(True)
+        self.toggle_theme_action.setChecked(True)  # Default to dark mode
+        self.toggle_theme_action.triggered.connect(self.toggle_theme)
+
+        # Create context menu actions
+        self.copy_sql_action_context = QAction("Copy SQL", self)
+        self.copy_sql_action_context.triggered.connect(self.handle_item_action_from_context)
+        
+        self.copy_url_action_context = QAction("Copy File URL", self)
+        self.copy_url_action_context.triggered.connect(self.copy_bookmark_url_from_context)
+        
+        self.edit_query_action_context = QAction("Edit Query", self)
+        self.edit_query_action_context.triggered.connect(self.edit_query)
+        
+        self.delete_query_action_context = QAction("Delete Query", self)
+        self.delete_query_action_context.triggered.connect(self.delete_query)
+        
+        self.manage_labels_action_context = QAction("Manage Labels", self)
+        self.manage_labels_action_context.triggered.connect(self.manage_labels)
+        
+        self.import_to_vault_action_context = QAction("Import to Vault", self)
+        self.import_to_vault_action_context.triggered.connect(self.import_to_vault)
+
+        # --- File-menu specific actions ---
+        self.open_file_action = QAction("&Open DataGrip XML...", self)
+        self.open_file_action.setShortcut(QKeySequence.Open)
+        self.open_file_action.triggered.connect(self.select_and_load_file)
+
+        self.set_sql_root_action = QAction("Set SQL Root Directory...", self)
+        self.set_sql_root_action.triggered.connect(self.set_sql_root_directory)
+
+        self.clear_counts_action = QAction("Clear Usage Counts", self)
+        self.clear_counts_action.triggered.connect(self.clear_usage_counts)
+
+        # --- View-menu extras ---
+        self.transparency_action = QAction("Window Opacity...", self)
+        self.transparency_action.triggered.connect(self.show_transparency_dialog)
+
+        # Preview edit toggle
+        self.toggle_edit_action = QAction("Editable Preview", self)
+        self.toggle_edit_action.setCheckable(True)
+        self.toggle_edit_action.setChecked(False)  # Default read-only
+        self.toggle_edit_action.toggled.connect(self.toggle_preview_editable)
+
+        # --- Help-menu actions ---
+        self.help_locations_action = QAction("File Locations...", self)
+        self.help_locations_action.triggered.connect(self.show_help_locations)
+
+        self.about_action = QAction("About", self)
+        self.about_action.triggered.connect(self.show_about_dialog)
+
+        logging.info("create_actions() successfully created and connected.")
+
+    def add_actions_to_menus(self):
+        """Populate the File / View / Help menus and rebuild the tray context menu."""
+        # ----- File Menu -----
+        self.file_menu.addAction(self.open_file_action)
+        self.file_menu.addAction(self.set_sql_root_action)
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(self.clear_counts_action)
+        self.file_menu.addSeparator()
+        self.file_menu.addAction(self.exit_action)
+
+        # ----- View Menu -----
+        self.view_menu.addAction(self.toggle_theme_action)
+        self.view_menu.addAction(self.transparency_action)
+        self.view_menu.addAction(self.toggle_edit_action)
+        self.view_menu.addSeparator()
+
+        # ----- Help Menu -----
+        self.help_menu.addAction(self.help_locations_action)
+        self.help_menu.addSeparator()
+        self.help_menu.addAction(self.about_action)
+
+        # ----- System-Tray Menu -----
+        self.tray_menu = QMenu("Tray Menu", self)
+        self.tray_menu.addAction(self.show_window_action)
+        self.tray_menu.addAction(self.hide_window_action)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(self.tray_copy_sql_action)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(self.exit_action)
+
+        if getattr(self, 'tray_icon', None):
+            self.tray_icon.setContextMenu(self.tray_menu)
+
+        logging.info("add_actions_to_menus: Menus populated.")
+
     def __init__(self, settings: AppSettings, usage_counts: UsageCounts):
         super().__init__()
+        
+        # Store settings and usage counting instances
         self.settings = settings
         self.usage_counts = usage_counts
-        self.bookmarks = [] # Holds the raw loaded bookmark data {dict}
-        self.sorted_bookmarks_cache = [] # Holds currently sorted/filtered list for UI/tray {dict}
-        # Try to load path of last used bookmarks file copy
-        self.loaded_file_path = self.settings.get('loaded_copy_path', LAST_BOOKMARKS_COPY)
-        self.context_item = None # Stores the item clicked for context menu
-        self.tray_icon = None # QSystemTrayIcon instance
-        self.tray_menu = None # QMenu for tray icon
-
-        self.setWindowTitle(APP_NAME)
-        # Default to a standard window frame initially
-        self.setWindowFlags(Qt.WindowType.Window)
-
+        
+        # Initialize query vault for internal storage
+        self.query_vault = QueryVault()
+        
+        # Initialize bookmarks list to empty
+        self.bookmarks = []
+        # Cache for sorted bookmarks after filtering
+        self.sorted_bookmarks_cache = []
+        # File source tracking
+        self.loaded_file_path = None
+        # Current data source (DataGrip XML or Internal Vault)
+        self.current_data_source = self.settings.get('data_source', SOURCE_DATAGRIP)
+        
+        # Temporary variables for context operations
+        self.context_menu_item = None  # For tracking item under context menu
+        
+        # Window title setup 
+        self.setWindowTitle(f"{APP_NAME}")
+        
+        # Apply saved window geometry if available
         self._load_and_apply_geometry()
+        
+        # Apply window transparency setting
         self._apply_transparency()
-        self.setMinimumSize(600, 400) # Reasonable minimum size
+        
+        # Initialize UI components
+        self.setup_ui()
+        
+        # Create all actions (must be done before menus)
+        self.create_actions()
+        
+        # Add actions to menus (must be done after create_actions)
+        self.add_actions_to_menus()
+        
+        # Initialize context menu (must be done after create_actions)
+        self.init_context_menu()
+        
+        # Load and apply theme preference
+        is_dark = self.settings.get('dark_theme', True)  # Default to dark theme
+        self.toggle_theme_action.setChecked(is_dark)
+        self.apply_styles(is_dark=is_dark)
+        
+        # Initialize tray icon (must be done after create_actions)
+        self.tray_icon = None
+        self.init_tray_icon()
+        
+        # Connect signals (must be done after UI and actions are created)
+        self.connect_signals()
+        
+        # Load initial data based on source
+        if self.current_data_source == SOURCE_DATAGRIP:
+            last_file = self.settings.get('loaded_copy_path')
+            if last_file and os.path.isfile(last_file):
+                self.load_bookmarks(last_file)
+            else:
+                self.update_bookmark_list()  # Show empty state
+        else:
+            self.load_queries_from_vault()
+        
+        # Show the window, init complete
+        self.show()
+        logging.info(f"{APP_NAME} window initialized and shown.")
 
-        self.setup_ui() # Create UI elements
-        self.create_actions() # Create QActions
-        self.add_actions_to_menus() # Populate menubar
-        self.init_context_menu() # Setup right-click menu for list
-        self.connect_signals() # Connect UI signals to slots
-        self.apply_styles() # Apply CSS-like styles
-
-        # Load initial data and setup tray icon
-        self.load_bookmarks(self.loaded_file_path) # Load data, updates UI & saves path
-        self.init_tray_icon() # Setup tray icon and its menu
-
-        self.show() # Make the window visible
-        logging.info("Main window initialized and shown.")
+    def connect_signals(self):
+        """Connect all signals to their slots."""
+        # Search and filter signals
+        self.search_box.textChanged.connect(self.filter_bookmarks)
+        self.search_title_radio.toggled.connect(self.filter_bookmarks)
+        self.search_syntax_radio.toggled.connect(self.filter_bookmarks)
+        self.search_both_radio.toggled.connect(self.filter_bookmarks)
+        self.label_filter_combo.currentIndexChanged.connect(self.filter_bookmarks)
+        
+        # Font size signal
+        self.font_size_combo.currentTextChanged.connect(self.update_font_size)
+        
+        # Data source signal
+        self.source_combo.currentIndexChanged.connect(self.on_source_changed)
+        
+        # Button signals
+        self.hide_button.clicked.connect(self.hide_to_tray)
+        self.custom_close_button.clicked.connect(self.close_app)
+        
+        # List signals
+        self.bookmark_list.itemDoubleClicked.connect(self.handle_item_action)
+        
+        logging.info("Signals connected successfully.")
 
     def _load_and_apply_geometry(self):
         """Loads and applies window geometry from settings."""
@@ -590,18 +1052,37 @@ class FloatingBookmarksWindow(QMainWindow):
             self.settings.set('transparency', 1.0) # Correct setting value
 
     def setup_ui(self):
-        """Creates and arranges the main UI elements."""
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        main_layout = QVBoxLayout(self.central_widget)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(6)
-
-        # --- Menubar ---
+        """Setup the UI components."""
+        # Create central widget and layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        
+        # --- Menu Bar ---
         self.menu_bar = self.menuBar()
         self.file_menu = self.menu_bar.addMenu("&File")
-        self.view_menu = self.menu_bar.addMenu("&View") # Added View Menu
+        self.view_menu = self.menu_bar.addMenu("&View")
         self.help_menu = self.menu_bar.addMenu("&Help")
+
+        # --- Source Toggle UI ---
+        source_layout = QHBoxLayout()
+        source_layout.setSpacing(10)
+        source_label = QLabel("Data Source:")
+        source_label.setObjectName("source_label")
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("DataGrip Export (XML)", SOURCE_DATAGRIP)
+        self.source_combo.addItem("Internal Query Vault", SOURCE_INTERNAL)
+        
+        # Set current index based on settings
+        current_source = self.settings.get('data_source', SOURCE_DATAGRIP)
+        index = 0 if current_source == SOURCE_DATAGRIP else 1
+        self.source_combo.setCurrentIndex(index)
+        
+        source_layout.addWidget(source_label)
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch(1)  # Push widgets to the left
+        
+        main_layout.addLayout(source_layout)
 
         # --- Top Layout (Search, Font, Count) ---
         top_layout = QHBoxLayout()
@@ -609,7 +1090,7 @@ class FloatingBookmarksWindow(QMainWindow):
 
         # --- Search Box ---
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Search Bookmarks...")
+        self.search_box.setPlaceholderText("Search Queries...")
         top_layout.addWidget(self.search_box, 2) # Give search box more stretch factor
 
         # --- Search Options ---
@@ -624,9 +1105,19 @@ class FloatingBookmarksWindow(QMainWindow):
             s_opt_layout.addWidget(btn)
         self.search_both_radio.setChecked(True) # Default to searching both
         top_layout.addLayout(s_opt_layout)
+        
+        # --- Label Filter ---
+        label_filter_layout = QHBoxLayout()
+        label_filter_layout.addWidget(QLabel("Label:"))
+        self.label_filter_combo = QComboBox()
+        self.label_filter_combo.addItem("All Labels", None)  # Default option
+        self.update_label_filter_dropdown()  # Populate with available labels
+        label_filter_layout.addWidget(self.label_filter_combo)
+        top_layout.addLayout(label_filter_layout)
+        
         top_layout.addStretch(1) # Add some space before font settings
 
-        # --- Font Size Combo Box (CORRECTED AREA from previous response) ---
+        # --- Font Size Combo Box ---
         fnt_layout = QHBoxLayout()
         fnt_layout.addWidget(QLabel("Font:"))
         self.font_size_combo = QComboBox()
@@ -646,10 +1137,9 @@ class FloatingBookmarksWindow(QMainWindow):
         self.font_size_combo.setMinimumWidth(50) # Give it a minimum width
         fnt_layout.addWidget(self.font_size_combo)
         top_layout.addLayout(fnt_layout)
-        # --- End Font Size Combo Box ---
 
         # --- Bookmark Count ---
-        self.bookmark_count_label = QLabel("Bookmarks: 0")
+        self.bookmark_count_label = QLabel("Queries: 0")
         self.bookmark_count_label.setObjectName("bookmark_count_label") # For styling
         self.bookmark_count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.bookmark_count_label.setMinimumWidth(100) # Ensure space for text
@@ -669,17 +1159,74 @@ class FloatingBookmarksWindow(QMainWindow):
         self.bookmark_list.setItemDelegate(BookmarkDelegate(self.bookmark_list)) # Apply custom delegate
         list_lay.addWidget(self.bookmark_list)
         # Label shown when list is empty
-        self.no_bookmarks_label = QLabel("No bookmarks loaded.")
+        self.no_bookmarks_label = QLabel("No queries loaded.")
         self.no_bookmarks_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         list_lay.addWidget(self.no_bookmarks_label)
         self.no_bookmarks_label.hide() # Initially hidden
+
         self.splitter.addWidget(list_cont)
 
         # Right side: Preview Pane
-        self.preview_pane = QTextEdit()
+        # Replace existing QTextEdit preview pane with QScintilla
+        self.preview_pane = QsciScintilla()
         self.preview_pane.setReadOnly(True)
-        self.preview_pane.setPlaceholderText("Select a bookmark to preview its SQL content...")
-        self.splitter.addWidget(self.preview_pane)
+
+        # Set a monospace font for code display
+        code_font = QFont('Consolas, Courier New, monospace', 10)
+        code_font.setFixedPitch(True)
+        self.preview_pane.setFont(code_font)
+
+        # Configure SQL syntax highlighting
+        self.sql_lexer = QsciLexerSQL()
+        self.sql_lexer.setDefaultFont(code_font)
+        self.preview_pane.setLexer(self.sql_lexer)
+
+        # Configure display options
+        self.preview_pane.setMarginWidth(0, '00000')  # Line numbers width
+        self.preview_pane.setMarginLineNumbers(0, True)
+        self.preview_pane.setMarginsForegroundColor(QColor('#CCCCCC'))
+        self.preview_pane.setMarginsBackgroundColor(QColor('#252526'))
+        self.preview_pane.setUtf8(True)
+
+        # Set dark theme colors for the editor
+        self.preview_pane.setPaper(QColor('#252526'))  # Background
+        self.preview_pane.setColor(QColor('#dcdcdc'))  # Text color
+
+        # Configure line wrapping
+        self.preview_pane.setWrapMode(QsciScintilla.WrapNone)
+
+        # Configure selection colors
+        self.preview_pane.setSelectionBackgroundColor(QColor('#264F78'))
+        self.preview_pane.setSelectionForegroundColor(QColor('#ffffff'))
+        
+        # --- Build preview container with footer controls ---
+        preview_cont = QWidget()
+        preview_layout = QVBoxLayout(preview_cont)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(0)
+
+        # Add main editor
+        preview_layout.addWidget(self.preview_pane, 1)  # Stretch factor 1
+
+        # Footer layout with Editable toggle & Add button
+        preview_footer_layout = QHBoxLayout()
+        preview_footer_layout.setContentsMargins(4, 4, 4, 4)
+
+        self.edit_toggle_checkbox = QCheckBox("Editable")
+        self.edit_toggle_checkbox.setChecked(False)
+        self.edit_toggle_checkbox.toggled.connect(self.toggle_preview_editable)
+
+        self.add_button = QPushButton("Add")
+        self.add_button.clicked.connect(self.add_new_query)
+
+        preview_footer_layout.addWidget(self.edit_toggle_checkbox)
+        preview_footer_layout.addWidget(self.add_button)
+        preview_footer_layout.addStretch()
+
+        preview_layout.addLayout(preview_footer_layout)
+
+        # Add the container to the splitter (instead of raw preview_pane)
+        self.splitter.addWidget(preview_cont)
 
         # Restore splitter state or set default split
         splitter_state_hex = self.settings.get('splitter_state')
@@ -704,16 +1251,7 @@ class FloatingBookmarksWindow(QMainWindow):
         # --- Bottom Layout (Buttons) ---
         btm_layout = QHBoxLayout()
         btm_layout.setSpacing(10)
-        # Move Up/Down buttons (functionality currently basic - UI only)
-        self.up_button = QPushButton("Move Up")
-        self.down_button = QPushButton("Move Down")
-        # Temporarily disable Move buttons as underlying data move isn't robustly implemented yet
-        self.up_button.setEnabled(False)
-        self.down_button.setEnabled(False)
-        # btm_layout.addWidget(self.up_button) # Uncomment when move implemented
-        # btm_layout.addWidget(self.down_button)# Uncomment when move implemented
-        btm_layout.addStretch() # Push buttons to the right
-
+        # Add / Move Up / Move Down buttons
         self.hide_button = QPushButton("Hide to Tray")
         self.hide_button.setObjectName("hide_button") # For styling
         btm_layout.addWidget(self.hide_button)
@@ -727,452 +1265,9 @@ class FloatingBookmarksWindow(QMainWindow):
         # Update font size initially based on combo box's current value
         # Do this *after* all widgets using the font are created
         self.update_font_size(self.font_size_combo.currentText())
-
-    def create_actions(self):
-        """Create QActions for menus and potentially toolbars."""
-        # --- File Menu Actions ---
-        open_icon = QIcon.fromTheme("document-open", QIcon(os.path.join(ICON_DIR, "open_file.png"))) # Fallback icon
-        self.open_file_action = QAction(open_icon, "&Open Bookmarks XML...", self)
-        # **FIX:** Use Qt.KeyboardModifier for Control key
-        self.open_file_action.setShortcut(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_O)
-        self.open_file_action.setStatusTip("Open a DataGrip bookmarks XML file")
-
-        folder_icon = QIcon.fromTheme("folder", QIcon())
-        self.choose_sql_location_action = QAction(folder_icon, "Set &SQL Root Directory...", self)
-        self.choose_sql_location_action.setStatusTip("Set the root directory where your SQL files are located")
-
-        exec_icon = QIcon.fromTheme("application-x-executable", QIcon())
-        self.choose_datagrip_action = QAction(exec_icon, "Set DataGrip &Executable...", self)
-        self.choose_datagrip_action.setStatusTip("Set the path to the DataGrip executable (future use)")
-        self.choose_datagrip_action.setEnabled(False) # Not currently used
-
-        exit_icon = QIcon.fromTheme("application-exit", QIcon(os.path.join(ICON_DIR, "exit.png"))) # Fallback icon
-        self.exit_action = QAction(exit_icon, "E&xit", self)
-        # **FIX:** Use Qt.KeyboardModifier for Control key
-        self.exit_action.setShortcut(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Q)
-        self.exit_action.setStatusTip("Exit the application")
-
-        # --- View Menu Actions ---
-        settings_icon = QIcon.fromTheme("preferences-system", QIcon())
-        self.choose_favicon_action = QAction(settings_icon, "Set App &Icon...", self)
-        self.choose_favicon_action.setStatusTip("Choose the main application icon (.ico)")
-        self.choose_tray_icon_action = QAction(settings_icon, "Set &Tray Icon...", self)
-        self.choose_tray_icon_action.setStatusTip("Choose the system tray icon (.ico)")
-
-        clear_icon = QIcon.fromTheme("edit-clear", QIcon())
-        self.clear_counts_action = QAction(clear_icon,"&Clear Usage Counts", self)
-        self.clear_counts_action.setStatusTip("Reset all bookmark usage counts to zero")
-
-        self.bookmark_count_menu_action = QAction("Bookmarks: 0", self) # Placeholder, updated dynamically
-        self.bookmark_count_menu_action.setEnabled(False) # Not clickable
-
-        # Transparency Submenu/Action
-        self.transparency_menu = QMenu("Transparency", self) # This will be added to View menu
-        opacity_icon = QIcon.fromTheme("preferences-desktop-theme", QIcon())
-        self.transparency_slider_action = QAction(opacity_icon, "Set Transparency...", self)
-        self.transparency_slider_action.setStatusTip("Adjust window transparency level")
-        self.transparency_menu.addAction(self.transparency_slider_action)
-
-        # --- Help Menu Actions ---
-        help_icon = QIcon.fromTheme("help-contents", QIcon())
-        self.help_locations_action = QAction(help_icon, "Show File &Locations", self)
-        self.help_locations_action.setStatusTip("Show the locations of application data, logs, and configuration files")
-
-        # --- Tray Menu Actions (also used by main window hide/show) ---
-        self.show_window_action = QAction(QIcon.fromTheme("window-maximize"), "&Show Window", self)
-        self.hide_window_action = QAction(QIcon.fromTheme("window-minimize"), "&Hide Window", self)
-
-        copy_icon = QIcon.fromTheme("edit-copy", QIcon())
-        self.tray_copy_sql_action = QAction(copy_icon, "&Copy SQL...", self)
-        self.tray_copy_sql_action.setStatusTip("Select a bookmark from a list to copy its SQL")
-
-    def add_actions_to_menus(self):
-        """Populate the main menubar."""
-        # File Menu
-        self.file_menu.addAction(self.open_file_action)
-        self.file_menu.addSeparator()
-        self.file_menu.addAction(self.choose_sql_location_action)
-        self.file_menu.addAction(self.choose_datagrip_action)
-        self.file_menu.addSeparator()
-        self.file_menu.addAction(self.exit_action)
-
-        # View Menu
-        self.view_menu.addAction(self.choose_favicon_action)
-        self.view_menu.addAction(self.choose_tray_icon_action)
-        self.view_menu.addMenu(self.transparency_menu)
-        self.view_menu.addSeparator()
-        self.view_menu.addAction(self.clear_counts_action)
-        self.view_menu.addSeparator()
-        self.view_menu.addAction(self.bookmark_count_menu_action) # Display count here
-
-        # Help Menu
-        self.help_menu.addAction(self.help_locations_action)
-
-    def init_context_menu(self):
-        """Initialize the right-click context menu for the bookmark list."""
-        self.bookmark_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.context_menu = QMenu(self)
-
-        # Action to copy SQL (same as double-click/Enter)
-        copy_sql_icon = QIcon.fromTheme("edit-copy", QIcon())
-        self.copy_sql_action_context = QAction(copy_sql_icon, "Copy SQL", self)
-        self.copy_sql_action_context.triggered.connect(self.handle_item_action_from_context)
-
-        # Action to copy just the file URL
-        copy_url_icon = QIcon.fromTheme("text-html", QIcon()) # Using HTML icon as proxy for URL
-        self.copy_url_action_context = QAction(copy_url_icon, "Copy File URL", self)
-        self.copy_url_action_context.triggered.connect(self.copy_bookmark_url_from_context)
-
-        self.context_menu.addAction(self.copy_sql_action_context)
-        self.context_menu.addAction(self.copy_url_action_context)
-
-    @Slot(QListWidgetItem, QListWidgetItem)
-    def on_current_item_changed(self, current: QListWidgetItem, previous: QListWidgetItem):
-        """Update the preview pane when the current item changes (e.g., via keyboard navigation)."""
-        if current:
-            logging.debug(f"Current item changed to: {current.data(Qt.ItemDataRole.UserRole).get('title', 'N/A')}")
-            self.update_preview_pane(current)
-        else:
-            # Clear preview if selection is lost
-            self.preview_pane.clear()
-            self.preview_pane.setPlaceholderText("Select a bookmark to preview its SQL content...")
-            logging.debug("List selection cleared.")
-
-    def connect_signals(self):
-        """Connect UI signals to their corresponding slots."""
-        # Search
-        self.search_box.textChanged.connect(self.filter_bookmarks)
-        # Re-filter when search scope changes
-        self.search_title_radio.toggled.connect(self.filter_bookmarks)
-        self.search_syntax_radio.toggled.connect(self.filter_bookmarks)
-        # self.search_both_radio has no separate signal needed, it's handled by the others
-
-        # List interactions
-        self.bookmark_list.itemDoubleClicked.connect(self.handle_item_action) # Double-click copies SQL
-        self.bookmark_list.itemClicked.connect(self.update_preview_pane) # Single click updates preview
-        self.bookmark_list.currentItemChanged.connect(self.on_current_item_changed) # Arrow key navigation updates preview
-        self.bookmark_list.customContextMenuRequested.connect(self.show_context_menu) # Right-click
-
-        # Buttons
-        # self.up_button.clicked.connect(self.move_up) # Disabled for now
-        # self.down_button.clicked.connect(self.move_down) # Disabled for now
-        self.hide_button.clicked.connect(self.hide_to_tray) # Hide window button
-        self.custom_close_button.clicked.connect(self.quit_application) # Close button quits app
-
-        # Font size
-        self.font_size_combo.currentTextChanged.connect(self.update_font_size)
-
-        # Menu actions (File)
-        self.open_file_action.triggered.connect(self.select_and_load_file)
-        self.choose_sql_location_action.triggered.connect(self.choose_sql_location)
-        self.choose_datagrip_action.triggered.connect(self.choose_datagrip_executable)
-        self.exit_action.triggered.connect(self.quit_application)
-
-        # Menu actions (View)
-        self.choose_favicon_action.triggered.connect(self.choose_main_icon)
-        self.choose_tray_icon_action.triggered.connect(self.choose_tray_icon)
-        self.clear_counts_action.triggered.connect(self.clear_usage_counts)
-        self.transparency_slider_action.triggered.connect(self.show_transparency_dialog)
-
-        # Menu actions (Help)
-        self.help_locations_action.triggered.connect(self.show_help_locations)
-
-        # NOTE: Tray Actions connected later in connect_tray_signals when tray icon is confirmed available
-
-    # --- Icon/Path Choosing Logic ---
-    def choose_icon(self, target_icon_path, title="Choose Icon File"):
-        """Generic helper to choose an .ico file and copy it to the target path."""
-        # Start file dialog in the directory of the current icon, or the app's icon dir
-        start_dir = os.path.dirname(target_icon_path) if os.path.exists(os.path.dirname(target_icon_path)) else ICON_DIR
-        if not os.path.isdir(start_dir): start_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation) # Absolute fallback
-
-        fpath, _ = QFileDialog.getOpenFileName(self, title, start_dir, "Icon Files (*.ico);;All Files (*)")
-        updated = False
-        if fpath and os.path.exists(fpath):
-            try:
-                # Ensure target directory exists
-                os.makedirs(os.path.dirname(target_icon_path), exist_ok=True)
-                # Copy the chosen file to the application's data directory
-                shutil.copy2(fpath, target_icon_path)
-                logging.info(f"Successfully copied selected icon '{fpath}' to '{target_icon_path}'")
-                updated = True
-            except Exception as e:
-                logging.error(f"Failed to copy icon file from '{fpath}' to '{target_icon_path}': {e}", exc_info=True)
-                QMessageBox.critical(self, "Icon Copy Error", f"Failed to copy the selected icon:\n{e}")
-        elif fpath: # User selected a path but it doesn't exist (shouldn't happen with QFileDialog?)
-            QMessageBox.warning(self, "File Not Found", f"The selected icon file could not be found:\n{fpath}")
-
-        return updated, target_icon_path # Return success status and the target path
-
-    def choose_main_icon(self):
-        """Handles choosing and applying the main application icon."""
-        updated, path = self.choose_icon(MAIN_ICON_FILE, "Choose Main Application Icon (.ico)")
-        if updated:
-            icon = QIcon(path)
-            if not icon.isNull():
-                QApplication.instance().setWindowIcon(icon) # Set for the whole app
-                self.setWindowIcon(icon) # Set for this window instance
-                logging.info("Main application icon updated successfully.")
-                QMessageBox.information(self, "Icon Updated", "The main application icon has been updated.")
-            else:
-                logging.error(f"Failed to load the new main application icon from {path} even after copying.")
-                QMessageBox.warning(self, "Icon Load Error", f"The new icon was copied, but could not be loaded.\nPlease ensure it's a valid .ico file.")
-
-    def choose_tray_icon(self):
-        """Handles choosing and applying the system tray icon."""
-        updated, path = self.choose_icon(TRAY_ICON_FILE, "Choose System Tray Icon (.ico)")
-        if updated and self.tray_icon: # Only proceed if update was successful and tray icon exists
-            icon = QIcon(path)
-            if not icon.isNull():
-                self.tray_icon.setIcon(icon)
-                logging.info("System tray icon updated successfully.")
-                QMessageBox.information(self, "Icon Updated", "The system tray icon has been updated.")
-            else:
-                logging.error(f"Failed to load the new tray icon from {path} even after copying.")
-                QMessageBox.warning(self, "Icon Load Error", f"The new tray icon was copied, but could not be loaded.\nPlease ensure it's a valid .ico file.")
-        elif updated and not self.tray_icon:
-             logging.warning("Tray icon file updated, but no tray icon object exists (system tray unavailable?).")
-             QMessageBox.information(self, "Icon Copied", "Tray icon file updated, but the tray icon is not currently active.")
-
-    def choose_sql_location(self):
-        """Allows user to select the root directory for their SQL files."""
-        current_dir = self.settings.get('sql_root_directory', '')
-        # Start in the current directory or user's home if not set
-        start_dir = current_dir if os.path.isdir(current_dir) else os.path.expanduser("~")
-
-        directory = QFileDialog.getExistingDirectory(self, "Choose SQL Root Directory", start_dir)
-
-        if directory: # User selected a directory
-            try:
-                self.settings.set('sql_root_directory', directory)
-                self.settings.save_settings()
-                logging.info(f"SQL root directory set to: {directory}")
-                QMessageBox.information(self, "Directory Set", f"SQL root directory successfully set to:\n{directory}")
-                # Re-resolve and update preview if an item is selected
-                current_item = self.bookmark_list.currentItem()
-                if current_item:
-                    self.update_preview_pane(current_item)
-            except Exception as e:
-                logging.error(f"Error saving SQL root directory setting: {e}", exc_info=True)
-                QMessageBox.critical(self, "Error Saving Setting", f"Failed to save the selected SQL directory:\n{e}")
-
-    def choose_datagrip_executable(self):
-        """Allows user to select the DataGrip executable (placeholder)."""
-        # This function is currently disabled but structure is here
-        current_path = self.settings.get('datagrip_path', DEFAULT_DATAGRIP_PATH)
-        init_dir = os.path.dirname(current_path) if current_path else os.path.expanduser("~")
-
-        fpath, _ = QFileDialog.getOpenFileName(self, "Choose DataGrip Executable", init_dir, "Executables (*.exe);;All Files (*)")
-
-        if fpath and os.path.exists(fpath):
-            try:
-                self.settings.set('datagrip_path', fpath)
-                self.settings.save_settings()
-                logging.info(f"DataGrip executable path set to: {fpath}")
-                QMessageBox.information(self, "Path Set", f"DataGrip executable path successfully set:\n{fpath}")
-            except Exception as e:
-                logging.error(f"Error saving DataGrip executable path: {e}", exc_info=True)
-                QMessageBox.critical(self, "Error Saving Setting", f"Failed to save the selected DataGrip path:\n{e}")
-        elif fpath:
-            QMessageBox.warning(self, "File Not Found", f"The selected executable file could not be found:\n{fpath}")
-
-    # --- Styling and Font Update ---
-    def apply_styles(self):
-        """Apply custom styles using stylesheets for a dark theme."""
-        # Using more specific selectors where possible (e.g., QPushButton#hide_button)
-        # Font properties removed from here for QListWidget/QTextEdit as they are set programmatically
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2b2b2b; /* Dark background */
-                color: #dcdcdc; /* Light grey text */
-                font-family: 'Segoe UI', Arial, sans-serif; /* Default font */
-            }
-            QWidget#centralWidget { /* Style the central widget specifically */
-                background-color: #2b2b2b;
-            }
-            QMenuBar {
-                background-color: #3c3c3c; /* Slightly lighter dark */
-                color: #dcdcdc;
-                border-bottom: 1px solid #555555; /* Subtle separator */
-            }
-            QMenuBar::item {
-                padding: 4px 10px;
-                background: transparent;
-            }
-            QMenuBar::item:selected { /* Hover/selection */
-                background-color: #0078d7; /* Standard blue highlight */
-                color: #ffffff;
-            }
-            QMenuBar::item:pressed {
-                background-color: #005ba1; /* Darker blue when pressed */
-            }
-            QMenu {
-                background-color: #3c3c3c;
-                color: #dcdcdc;
-                border: 1px solid #555555; /* Border around menu */
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 20px; /* More padding for readability */
-                /* Font size managed by system or explicitly if needed */
-            }
-            QMenu::item:selected {
-                background-color: #0078d7;
-                color: #ffffff;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #555555;
-                margin: 4px 0px;
-            }
-            QLineEdit {
-                background-color: #3c3c3c;
-                color: #dcdcdc;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 5px;
-                /* font-size: 12px; */ /* Let system handle or set via QFont */
-            }
-            QLineEdit:focus {
-                border: 1px solid #0078d7; /* Blue border on focus */
-                background-color: #4a4a4a; /* Slightly lighter background on focus */
-            }
-            QListWidget { /* Base style for the list */
-                background-color: #3c3c3c;
-                color: #dcdcdc;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 0px; /* Delegate handles padding */
-                outline: none; /* Remove focus outline */
-                /* Font set programmatically */
-                /* Item selection colors handled by delegate/palette */
-            }
-            QTextEdit { /* Style for the preview pane */
-                background-color: #252526; /* Even darker background for code */
-                color: #dcdcdc;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 5px;
-                /* Font set programmatically */
-            }
-            QPushButton {
-                background-color: #4a4a4a; /* Default button grey */
-                color: #dcdcdc;
-                border: 1px solid #666666;
-                padding: 6px 12px;
-                /* font-size: 12px; */
-                border-radius: 3px;
-                min-width: 80px; /* Minimum button width */
-                margin: 0px 2px; /* Small horizontal margin */
-            }
-            QPushButton:hover {
-                background-color: #5a5a5a; /* Lighter grey on hover */
-                border-color: #777777;
-            }
-            QPushButton:pressed {
-                background-color: #3a3a3a; /* Darker grey when pressed */
-            }
-            QPushButton#hide_button { /* Specific style for Hide button */
-                background-color: #34577d; /* Blue */
-                color: white;
-                border-color: #456a9c;
-            }
-            QPushButton#hide_button:hover {
-                background-color: #456a9c;
-                border-color: #5a85b0;
-            }
-            QPushButton#hide_button:pressed {
-                background-color: #284363;
-            }
-            QPushButton#custom_close_button { /* Specific style for Close button */
-                background-color: #7d3434; /* Red */
-                color: white;
-                border-color: #9c4545;
-            }
-            QPushButton#custom_close_button:hover {
-                background-color: #9c4545;
-                border-color: #b05a5a;
-            }
-            QPushButton#custom_close_button:pressed {
-                background-color: #632828;
-            }
-            QLabel { /* Default label style */
-                color: #dcdcdc;
-                /* font-size: 12px; */
-                background-color: transparent; /* Ensure no background unless specified */
-                border: none;
-                padding: 0px;
-            }
-            QLabel#bookmark_count_label { /* Specific padding for count label */
-                padding: 5px;
-            }
-            QRadioButton {
-                color: #dcdcdc;
-                /* font-size: 12px; */
-                background-color: transparent;
-            }
-            QRadioButton::indicator { /* Style the radio button circle */
-                width: 13px;
-                height: 13px;
-            }
-            QComboBox {
-                background-color: #3c3c3c;
-                color: #dcdcdc;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 5px; /* Padding inside the combo box text area */
-                /* font-size: 12px; */
-                min-width: 40px; /* Min width for font size dropdown */
-            }
-            QComboBox:focus {
-                border: 1px solid #0078d7; /* Highlight on focus */
-            }
-            QComboBox::drop-down { /* Style the dropdown arrow area */
-                border: none;
-                background-color: #4a4a4a; /* Button-like background */
-                width: 15px;
-                border-top-right-radius: 3px; /* Match main radius */
-                border-bottom-right-radius: 3px;
-            }
-            QComboBox::down-arrow {
-                 /* Use a theme icon or custom image if desired, removing default arrow */
-                 /* image: url(:/icons/down_arrow.png); */
-                 /* For now, let the system draw it or leave it blank */
-                 image: url(no_arrow.png); /* Explicitly remove default arrow if needed */
-            }
-            QComboBox QAbstractItemView { /* Style the dropdown list */
-                background-color: #3c3c3c;
-                color: #dcdcdc;
-                selection-background-color: #0078d7; /* Highlight color for selected item */
-                border: 1px solid #555555; /* Border around the dropdown */
-                outline: none;
-            }
-            QSplitter::handle {
-                background-color: #555555; /* Color of the splitter handle */
-            }
-            QSplitter::handle:horizontal {
-                width: 5px; /* Width of vertical splitter */
-            }
-            QSplitter::handle:vertical {
-                height: 5px; /* Height of horizontal splitter */
-            }
-            QSplitter::handle:pressed {
-                background-color: #0078d7; /* Color when dragging */
-            }
-            QDialog { /* Base style for dialogs */
-                background-color: #2b2b2b;
-                color: #dcdcdc;
-                /* font-size: 12px; */
-            }
-            QDialog QLabel { /* Ensure dialog labels are transparent */
-                background-color: transparent;
-            }
-            QDialog QPushButton { /* Smaller min width for dialog buttons */
-                min-width: 60px;
-            }
-        """)
+        
         # Set object names used in the stylesheet selectors
-        self.central_widget.setObjectName("centralWidget")
+        self.centralWidget().setObjectName("centralWidget")
         self.hide_button.setObjectName("hide_button")
         self.custom_close_button.setObjectName("custom_close_button")
         self.bookmark_count_label.setObjectName("bookmark_count_label")
@@ -1200,7 +1295,20 @@ class FloatingBookmarksWindow(QMainWindow):
 
             # Apply font to relevant widgets
             self.bookmark_list.setFont(font)
+            
+            # Set font for QScintilla preview pane
             self.preview_pane.setFont(font)
+            
+            # Update font for the SQL lexer too
+            if hasattr(self, 'sql_lexer') and self.sql_lexer:
+                lexer_font = QFont(font)
+                self.sql_lexer.setFont(lexer_font)
+                
+            # Update the margin width for line numbers when font changes
+            if hasattr(self, 'preview_pane'):
+                fontmetrics = QFontMetrics(font)
+                self.preview_pane.setMarginWidth(0, fontmetrics.horizontalAdvance("00000") + 5)
+                
             # Font size combo itself might need font update if system doesn't handle it
             # self.font_size_combo.setFont(font) # Usually not needed
 
@@ -1235,7 +1343,7 @@ class FloatingBookmarksWindow(QMainWindow):
             else:
                 # Clear preview if nothing is selected after font change
                 self.preview_pane.clear()
-                self.preview_pane.setPlaceholderText("Select a bookmark to preview its SQL content...")
+                self.preview_pane.setText("-- Select a bookmark to preview its SQL content...")
 
 
             logging.info(f"Font size successfully set to {font_size}pt")
@@ -1316,7 +1424,7 @@ class FloatingBookmarksWindow(QMainWindow):
         self.tray_icon.setContextMenu(self.tray_menu)
 
         # Connect signals for tray icon interaction
-        self.connect_tray_signals()
+        self.tray_icon.activated.connect(self.handle_tray_icon_activation)
 
         self.tray_icon.show()
 
@@ -1329,25 +1437,6 @@ class FloatingBookmarksWindow(QMainWindow):
             # Optionally disable UI elements again if showing failed
             # self.hide_button.setEnabled(False)
             # self.hide_button.setToolTip("Tray icon failed to show")
-
-    def connect_tray_signals(self):
-        """Connect signals related to the tray icon."""
-        if not self.tray_icon:
-            logging.debug("Skipping tray signal connection: tray icon not available.")
-            return
-        try:
-            # Handle clicks on the tray icon
-            self.tray_icon.activated.connect(self.handle_tray_icon_activation)
-            # Connect actions used in the tray menu
-            self.show_window_action.triggered.connect(self.show_window)
-            self.hide_window_action.triggered.connect(self.hide_to_tray)
-            self.tray_copy_sql_action.triggered.connect(self.show_tray_copy_dialog)
-            # exit_action is already connected in connect_signals
-
-            logging.debug("Tray icon signals connected.")
-        except Exception as e:
-            # Catch potential errors during signal connection (less common)
-            logging.error(f"Error connecting tray icon signals: {e}", exc_info=True)
 
     def handle_tray_icon_activation(self, reason):
         """Handle tray icon activation (clicks)."""
@@ -1566,7 +1655,7 @@ class FloatingBookmarksWindow(QMainWindow):
 
     def update_bookmark_list(self):
         """Update list widget: filters, sorts, displays items, and caches the sorted list."""
-        logging.debug("Updating bookmark list...")
+        logging.debug("Updating query list...")
 
         # --- Preserve Selection ---
         selected_item_id = None
@@ -1597,25 +1686,31 @@ class FloatingBookmarksWindow(QMainWindow):
 
             # Populate the list widget with sorted items
             for index, bm in enumerate(self.sorted_bookmarks_cache):
-                 if not isinstance(bm, dict):
-                     logging.warning(f"Skipping non-dict item during list update: {bm}")
-                     continue
-                 item = QListWidgetItem()
-                 item.setData(Qt.ItemDataRole.UserRole, bm) # Store data in the item
-                 # Delegate takes care of display based on data
-                 self.bookmark_list.addItem(item)
-                 # Check if this is the item that was previously selected
-                 if selected_item_id and bm.get('id') == selected_item_id:
-                     restored_idx = index
+                if not isinstance(bm, dict):
+                    logging.warning(f"Skipping non-dict item during list update: {bm}")
+                    continue
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, bm) # Store data in the item
+                # Delegate takes care of display based on data
+                self.bookmark_list.addItem(item)
+                # Check if this is the item that was previously selected
+                if selected_item_id and bm.get('id') == selected_item_id:
+                    restored_idx = index
         else:
             # Show the "No bookmarks" label and hide the list
             self.bookmark_list.hide()
             if search_term:
-                self.no_bookmarks_label.setText("No bookmarks match your search.")
+                self.no_bookmarks_label.setText("No queries match your search.")
             elif not self.bookmarks:
-                 self.no_bookmarks_label.setText("No bookmarks loaded. Use File > Open.")
+                if self.current_data_source == SOURCE_DATAGRIP:
+                    self.no_bookmarks_label.setText("No queries loaded. Use File > Open to load XML.")
+                else:
+                    self.no_bookmarks_label.setText("No queries in vault. Add new queries to get started.")
             else:
-                self.no_bookmarks_label.setText("No bookmarks available (check XML file?).")
+                if self.current_data_source == SOURCE_DATAGRIP:
+                    self.no_bookmarks_label.setText("No queries available (check XML file?).")
+                else:
+                    self.no_bookmarks_label.setText("No queries available (vault may be corrupted).")
             self.no_bookmarks_label.show()
 
         # Re-enable updates now that the list is populated
@@ -1632,426 +1727,179 @@ class FloatingBookmarksWindow(QMainWindow):
                     self.bookmark_list.scrollToItem(restored_item, QAbstractItemView.ScrollHint.EnsureVisible)
                     logging.debug(f"Restored selection to index {restored_idx} (ID: {selected_item_id})")
                 else:
-                     logging.warning(f"Found index {restored_idx} for selection restore, but item was null.")
+                    logging.warning(f"Found index {restored_idx} for selection restore, but item was null.")
             except Exception as e:
-                 logging.error(f"Error restoring selection to index {restored_idx}: {e}", exc_info=True)
+                logging.error(f"Error restoring selection to index {restored_idx}: {e}", exc_info=True)
         # --- End Restore Selection ---
 
         # Update highlighting in the preview pane based on the current search term
         # This should happen *after* selection is potentially restored
         self.highlight_search_results()
-        logging.debug("Bookmark list update complete.")
+        
+        # Update window title based on data source
+        if self.current_data_source == SOURCE_DATAGRIP:
+            original_file = self.settings.get('last_file_path', self.loaded_file_path) 
+            if original_file and os.path.exists(original_file):
+                self.setWindowTitle(f"{APP_NAME} - DataGrip Mode - {os.path.basename(original_file)}")
+            else:
+                self.setWindowTitle(f"{APP_NAME} - DataGrip Mode (No File Loaded)")
+        else:
+            self.setWindowTitle(f"{APP_NAME} - Internal Query Vault")
+        
+        logging.debug("Query list update complete.")
 
-
-    def apply_filter(self, text):
-        """Filter bookmarks based on search text and selected search option."""
-        if not hasattr(self, 'bookmarks') or not isinstance(self.bookmarks, list):
-            logging.error("Apply_filter called but self.bookmarks is not a valid list.")
-            return []
-
-        if not text: # No search term, return all bookmarks
-            return list(self.bookmarks) # Return a copy
-
-        # Determine search scope (title, syntax, or both)
-        search_option = "both" # Default
-        # Check radio buttons safely (they might not exist during early init)
-        r_title = getattr(self, 'search_title_radio', None)
-        r_syntax = getattr(self, 'search_syntax_radio', None)
-        if r_title and r_title.isChecked():
-            search_option = "title"
-        elif r_syntax and r_syntax.isChecked():
-            search_option = "syntax"
-
-        filtered_list = []
-        text_lower = text.lower() # Case-insensitive search
-        logging.debug(f"Filtering with term '{text}' (option: {search_option})")
-
-        # Pre-fetch potentially needed values outside the loop
-        sql_root = self.settings.get('sql_root_directory')
-        user_home = os.path.expanduser("~") # Get user home once
-
-        for bm in self.bookmarks:
-            if not isinstance(bm, dict) or 'id' not in bm: continue # Skip invalid entries
-
-            title_match = False
-            syntax_match = False
-            title = bm.get('title', '') # Safely get title
-
-            # 1. Check Title Match (if applicable)
-            if search_option in ("title", "both"):
-                if text_lower in title.lower():
-                    title_match = True
-
-            # 2. Check Syntax Match (if applicable and title didn't already match if searching both)
-            if search_option in ("syntax", "both") and not (search_option == "both" and title_match):
-                # Avoid redundant SQL reading if title already matched in "both" mode
-                sql_content = self.get_sql_content(bm, sql_root=sql_root, user_home=user_home)
-                if sql_content and text_lower in sql_content.lower():
-                    syntax_match = True
-
-            # Add to filtered list if either matches according to the search option
-            if title_match or syntax_match:
-                filtered_list.append(bm)
-
-        logging.debug(f"Filtering complete. Found {len(filtered_list)} matches.")
-        return filtered_list
-
-
-    def apply_sort(self, bookmark_list):
-        """Sort bookmarks primarily by usage count (desc), then title (asc)."""
-        if not isinstance(bookmark_list, list):
-            logging.error("Apply_sort received non-list input.")
-            return [] # Return empty list if input is invalid
-
-        try:
-            # Sort key: Tuple where first element is negative count (for descending),
-            # second element is lowercase title (for ascending secondary sort).
-            # Handle potential non-dict items gracefully in key function.
-            return sorted(
-                bookmark_list,
-                key=lambda b: (
-                    -b.get('count', 0) if isinstance(b, dict) else 0, # Negate count for descending
-                    b.get('title', '').lower() if isinstance(b, dict) else '' # Lowercase title for ascending
-                )
-            )
-        except Exception as e:
-            logging.error(f"Error during bookmark sorting: {e}", exc_info=True)
-            return bookmark_list # Return the original list unsorted on error
-
-    @Slot() # Can be triggered by textChanged or radio toggled
     def filter_bookmarks(self):
-        """Slot to trigger list update when search text or options change."""
-        logging.debug("Filter trigger activated (text or radio change).")
+        """Filter bookmarks based on search term and update the list."""
+        logging.debug("Filtering bookmarks...")
         self.update_bookmark_list()
-        # Highlighting is handled within update_bookmark_list now
-
-
-    def resolve_file_path(self, url, sql_root=None, user_home=None):
-        """Resolve file path from URL, considering protocol, placeholders, and SQL root."""
-        if not url:
-            logging.debug("Resolve_file_path called with empty URL.")
-            return None
-
-        # Get SQL root and user home if not provided
-        if sql_root is None:
-            sql_root = self.settings.get('sql_root_directory', '')
-        if user_home is None:
-            user_home = os.path.expanduser("~")
-
-        f_path = url
-        prefix_found = False
-
-        # 1. Handle file:// prefix (common in DataGrip URLs)
-        # Handle both file:/// (correct) and file:// (sometimes seen)
-        for prefix in ["file:///", "file://"]:
-            if f_path.startswith(prefix):
-                f_path = f_path[len(prefix):]
-                prefix_found = True
-                # On Windows, a path starting with /C:/... might result, remove leading /
-                if sys.platform == 'win32' and f_path.startswith('/') and len(f_path) > 2 and f_path[2] == ':':
-                     f_path = f_path[1:]
-                logging.debug(f"Removed '{prefix}' prefix, path now: {f_path}")
-                break
-
-        # 2. Replace $USER_HOME$ placeholder
-        if "$USER_HOME$" in f_path:
-             f_path = f_path.replace("$USER_HOME$", user_home)
-             logging.debug(f"Replaced $USER_HOME$, path now: {f_path}")
-
-        # 3. Normalize path separators
-        f_path = os.path.normpath(f_path)
-        logging.debug(f"Normalized path: {f_path}")
-
-        # 4. Check if the path (potentially relative or absolute) exists directly
-        if os.path.exists(f_path):
-            logging.debug(f"Resolved path exists directly: {f_path}")
-            return f_path
-
-        # 5. If not found directly, check relative to SQL Root Directory (if set)
-        if sql_root and os.path.isdir(sql_root):
-            # Assume the f_path might be just the filename or relative within the project
-            # Construct path relative to SQL root
-            potential_path_in_sql_root = os.path.join(sql_root, os.path.basename(f_path)) # Simplest: just filename
-            # More complex: try joining relative path? Might be fragile.
-            # potential_path_in_sql_root_rel = os.path.join(sql_root, f_path)
-
-            logging.debug(f"Checking relative to SQL Root '{sql_root}': '{potential_path_in_sql_root}'")
-            if os.path.exists(potential_path_in_sql_root):
-                logging.debug(f"Found path relative to SQL Root: {potential_path_in_sql_root}")
-                return potential_path_in_sql_root
-            # elif os.path.exists(potential_path_in_sql_root_rel):
-            #     logging.debug(f"Found path relative to SQL Root (using full relative): {potential_path_in_sql_root_rel}")
-            #     return potential_path_in_sql_root_rel
-
-        # 6. Add specific OneDrive check (example - adjust pattern if needed)
-        # This is heuristic and might need refinement based on actual paths
-        onedrive_marker = "OneDrive - Aledade, Inc" # Adapt this marker
-        if onedrive_marker in url and user_home: # Check original URL for marker
-             try:
-                 # Try to reconstruct path relative to user's actual OneDrive folder
-                 parts = url.replace("\\", "/").split("/")
-                 idx = parts.index(onedrive_marker)
-                 # Join user home with parts *after* the marker
-                 potential_onedrive_path = os.path.normpath(os.path.join(user_home, *parts[idx:]))
-                 logging.debug(f"Checking potential OneDrive path: {potential_onedrive_path}")
-                 if os.path.exists(potential_onedrive_path):
-                      logging.debug(f"Resolved path via OneDrive heuristic: {potential_onedrive_path}")
-                      return potential_onedrive_path
-             except (ValueError, IndexError) as e:
-                 logging.debug(f"OneDrive marker found but path reconstruction failed: {e}")
-             except Exception as e: # Catch other potential errors during reconstruction
-                 logging.warning(f"Error during OneDrive path resolution: {e}", exc_info=True)
-
-
-        # If all checks fail, the path could not be resolved
-        logging.warning(f"Could not resolve URL '{url}' to an existing file path. Checked direct path '{f_path}' and relative to SQL root '{sql_root}'.")
-        return None
-
-
-    # --- Get SQL Content (Refined Slicing) ---
-    def get_sql_content(self, bookmark_data, sql_root=None, user_home=None, pre_resolved_path=None):
-        """Gets the SQL content for a given bookmark, respecting the next bookmark in the same file. Returns None on error."""
-        if not bookmark_data or not isinstance(bookmark_data, dict):
-            logging.warning("get_sql_content called with invalid bookmark_data.")
-            return None
-
-        url = bookmark_data.get('url', '')
-        start_line_str = bookmark_data.get('line', '')
-
-        if not url or not start_line_str:
-            logging.warning(f"Missing URL or Line in bookmark data: {bookmark_data.get('title', 'N/A')}")
-            return None
-
-        try:
-            # Line numbers in bookmarks are 1-based
-            start_line_1based = int(start_line_str) + 1 # DataGrip line seems 0-based, file lines are 1-based
-            if start_line_1based <= 0:
-                 logging.warning(f"Invalid start line number {start_line_1based} (from '{start_line_str}') for bookmark '{bookmark_data.get('title', 'N/A')}'")
-                 return None
-        except ValueError:
-            logging.warning(f"Non-integer line number '{start_line_str}' for bookmark '{bookmark_data.get('title', 'N/A')}'")
-            return None
-
-        # --- Resolve File Path ---
-        file_path = pre_resolved_path # Use pre-resolved path if provided (e.g., during syntax search)
-        if not file_path:
-             file_path = self.resolve_file_path(url, sql_root=sql_root, user_home=user_home)
-
-        if not file_path or not os.path.exists(file_path):
-            logging.warning(f"Could not find file for SQL content. URL: '{url}', Resolved Path: '{file_path}'")
-            # Optionally return an error message string?
-            # return f"-- Error: Could not find file at resolved path: {file_path}\n-- Original URL: {url}"
-            return None
-        # --- End Resolve File Path ---
-
-        # --- Determine End Line ---
-        end_line_1based = None # Represents the line *number* (1-based) *of* the next bookmark (exclusive end)
-        try:
-            # Find all bookmark lines for the *same file*
-            file_bookmark_lines = []
-            for bm in self.bookmarks:
-                if isinstance(bm, dict) and bm.get('url') == url:
-                    line_str = bm.get('line', '')
-                    try:
-                        # Convert to 1-based line number for comparison
-                        line_1based = int(line_str) + 1
-                        if line_1based > 0:
-                            file_bookmark_lines.append(line_1based)
-                    except ValueError:
-                        continue # Ignore bookmarks with invalid line numbers in the same file
-
-            if start_line_1based in file_bookmark_lines:
-                file_bookmark_lines.sort() # Sort lines numerically
-                try:
-                    current_idx = file_bookmark_lines.index(start_line_1based)
-                    # If there's a bookmark after this one in the sorted list...
-                    if current_idx + 1 < len(file_bookmark_lines):
-                        end_line_1based = file_bookmark_lines[current_idx + 1] # Line number of the next bookmark
-                        logging.debug(f"Found next bookmark in same file at line {end_line_1based}. Current ends before that.")
-                except ValueError:
-                    # Should not happen if start_line_1based was in the list
-                     logging.error(f"Logic error: start_line {start_line_1based} reported in list but index not found.")
-            # else: Bookmark start line not found among bookmarks for this file? Might be an issue, read to EOF.
-
-        except Exception as e:
-            # Log error during end line calculation but proceed (read to end)
-            logging.error(f"Error determining end line for bookmark '{bookmark_data.get('title', 'N/A')}': {e}", exc_info=True)
-        # --- End Determine End Line ---
-
-        # --- Read File Content ---
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-
-            total_lines = len(lines)
-            # Adjust start line to 0-based index for slicing
-            start_index_0based = start_line_1based - 1
-
-            if start_index_0based >= total_lines:
-                logging.warning(f"Start line ({start_line_1based}) is beyond the end of file ({total_lines} lines) for '{file_path}'.")
-                return None # Cannot start reading past the end
-
-            # Determine the end index for slicing (exclusive)
-            if end_line_1based is not None:
-                 # end_line_1based is the 1-based line number of the *next* bookmark.
-                 # We want to slice up to, but *not including*, that line.
-                 # So, the 0-based end index is end_line_1based - 1.
-                 end_index_0based = end_line_1based - 1
-                 # Clamp the end index to the bounds of the file
-                 end_index_0based = min(end_index_0based, total_lines)
-            else:
-                # No next bookmark found, read to the end of the file
-                end_index_0based = total_lines
-
-            # Ensure end index is not before start index
-            if end_index_0based <= start_index_0based:
-                 logging.warning(f"Calculated end index ({end_index_0based}) is not after start index ({start_index_0based}) for '{bookmark_data.get('title', 'N/A')}'. Reading only start line.")
-                 # Read just the single start line in this edge case
-                 sql_lines = lines[start_index_0based : start_index_0based + 1]
-            else:
-                 # Perform the slice
-                 sql_lines = lines[start_index_0based : end_index_0based]
-
-            logging.debug(f"Read lines {start_line_1based} to {end_index_0based} (exclusive) from '{file_path}'")
-            return ''.join(sql_lines) # Join the lines into a single string
-
-        except FileNotFoundError:
-             logging.error(f"File not found error during read operation: '{file_path}' (Should have been caught earlier?)")
-             return None
-        except IOError as e:
-             logging.error(f"IOError reading file '{file_path}': {e}", exc_info=True)
-             return None
-        except Exception as e:
-             logging.error(f"Unexpected error reading file content from '{file_path}': {e}", exc_info=True)
-             return None
-        # --- End Read File Content ---
+        
+    def apply_filter(self, search_term):
+        """Filter bookmarks based on search criteria and return filtered list."""
+        logging.debug(f"Applying filter with search term: '{search_term}'")
+        if not self.bookmarks:
+            return []
+            
+        # First apply label filter
+        filtered = self.apply_label_filter(self.bookmarks)
+        
+        # If no search term, just return the label-filtered list
+        if not search_term:
+            return filtered
+            
+        # Apply search criteria
+        search_term = search_term.lower()
+        results = []
+        
+        for bm in filtered:
+            title = bm.get('name', '').lower()
+            
+            # Determine search scope based on radio button selection
+            search_title = self.search_title_radio.isChecked() or self.search_both_radio.isChecked()
+            search_syntax = self.search_syntax_radio.isChecked() or self.search_both_radio.isChecked()
+            
+            # Match title if searching titles
+            if search_title and search_term in title:
+                results.append(bm)
+                continue
+                
+            # Match SQL content if searching syntax
+            if search_syntax:
+                # Get SQL content
+                sql_content = self.get_sql_content(bm)
+                if sql_content and search_term in sql_content.lower():
+                    results.append(bm)
+                    
+        logging.debug(f"Search filter results: {len(results)}/{len(filtered)} queries matching '{search_term}'")
+        return results
+    
+    def apply_sort(self, bookmarks):
+        """Sort the filtered bookmarks by name (alphabetically)."""
+        if not bookmarks:
+            return []
+            
+        # Simple alphabetical sort by name
+        return sorted(bookmarks, key=lambda bm: bm.get('name', '').lower())
 
     # --- Preview Pane and Highlighting ---
     def update_preview_pane(self, item: QListWidgetItem):
-        """Update preview pane with SQL content and highlight search terms."""
-        sql_content = None
-        header_info = "-- Select a bookmark to preview --"
-        bookmark_data = None
-
-        if item:
-            bookmark_data = item.data(Qt.ItemDataRole.UserRole)
-
-        if bookmark_data and isinstance(bookmark_data, dict) and bookmark_data.get('id'):
-            title = bookmark_data.get('title', 'N/A')
-            logging.debug(f"Updating preview for: '{title}'")
-            # Get the SQL content for this bookmark
-            sql_content = self.get_sql_content(bookmark_data)
-
-            if sql_content is not None:
-                # Prepare header information
-                file_url = bookmark_data.get('url', 'Unknown URL')
-                file_path = self.resolve_file_path(file_url) # Try to resolve for display
-                display_path = os.path.basename(file_path) if file_path else os.path.basename(file_url.replace("file://", ""))
-                line_num = bookmark_data.get('line', '?') # Original 0-based line
-                try:
-                    display_line = int(line_num) + 1 # Show 1-based line to user
-                except ValueError:
-                    display_line = line_num # Keep as is if not integer
-
-                header_info = (
-                    f"-- Bookmark: {title}\n"
-                    f"-- File: {display_path}\n"
-                    f"-- Line: {display_line} (Starts on 0-based line {line_num} in XML)\n"
-                    f"{'-'*60}\n"
-                )
-                # Combine header and SQL content
-                full_preview_text = header_info + sql_content.strip()
+        """Update the preview pane with the SQL content of the selected bookmark/query."""
+        if not item:
+            self.preview_pane.clear()
+            self.preview_pane.setText("-- Select a query to preview its SQL content...")
+            return
+            
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            self.preview_pane.setText("-- Error: Invalid query data.")
+            return
+            
+        # Get SQL content using our helper that handles both DataGrip and internal storage
+        sql_content = self.get_sql_content(data)
+        
+        if not sql_content:
+            # No content available
+            if self.current_data_source == SOURCE_INTERNAL:
+                self.preview_pane.setText("-- This query has no content.")
             else:
-                # SQL content failed to load, show error in preview
-                logging.warning(f"Failed to get SQL content for preview: '{title}'")
-                header_info = (
-                     f"-- Error loading preview for:\n"
-                     f"-- {title}\n"
-                     f"-- URL: {bookmark_data.get('url', 'N/A')}\n"
-                     f"-- Line: {bookmark_data.get('line', 'N/A')}\n"
-                     f"{'-'*60}\n"
-                     f"-- Check logs for details (e.g., file not found, parse errors)."
+                # For DataGrip mode, show more helpful error
+                self.preview_pane.setText(
+                    "-- SQL content could not be loaded.\n"
+                    "-- Possible reasons:\n"
+                    "-- 1. SQL file not found (check SQL Root Directory in File menu)\n"
+                    "-- 2. Read permission denied\n"
+                    "-- 3. File has been moved or deleted"
                 )
-                full_preview_text = header_info
-        else:
-             # No valid item selected or data missing
-             logging.debug("Update preview called with invalid item or data.")
-             full_preview_text = header_info # Show default placeholder
-
-        # Set the text in the preview pane
-        self.preview_pane.setPlainText(full_preview_text) # Use setPlainText for simpler text
-
-        # Always apply/clear highlighting *after* text is set
+            return
+            
+        # Update the preview pane with the content (QScintilla will handle the syntax highlighting)
+        self.preview_pane.setText(sql_content)
+        
+        # Apply search term highlighting if there's a current search
         self.highlight_search_results()
 
+    def highlight_sql_syntax(self):
+        """SQL syntax highlighting is now handled by QScintilla's lexer."""
+        # This method is kept as a placeholder to avoid breaking any existing calls
+        # The actual highlighting is done automatically by the QsciLexerSQL
+        pass
+
     def highlight_search_results(self):
-        """Highlights occurrences of the search term in the preview pane if syntax search is active."""
-        if not hasattr(self, 'preview_pane'): return # Should not happen
-
-        # Clear existing highlights first
-        cursor = self.preview_pane.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        default_format = QTextCharFormat() # Get default format from the widget?
-        # preview_format = self.preview_pane.currentCharFormat() # Or use current default
-        cursor.setCharFormat(default_format)
-        # Reset cursor position to avoid selection staying active
-        cursor.clearSelection()
-        self.preview_pane.setTextCursor(cursor)
-        logging.debug("Cleared previous highlights.")
-
-        search_term = self.search_box.text()
-        # Only highlight if there's a search term AND syntax/both search is enabled
-        search_syntax = getattr(self, 'search_syntax_radio', None)
-        search_both = getattr(self, 'search_both_radio', None)
-        should_highlight = bool(search_term and (
-            (search_syntax and search_syntax.isChecked()) or
-            (search_both and search_both.isChecked())
-        ))
-
-        if not should_highlight:
-             logging.debug("Highlighting skipped (no search term or syntax search not active).")
-             return
-
-        document = self.preview_pane.document()
-        if not document:
-             logging.warning("Preview pane document is null, cannot highlight.")
-             return
-
-        # Define the format for highlighted text
-        highlight_format = QTextCharFormat()
-        highlight_format.setBackground(QColor("yellow"))
-        highlight_format.setForeground(QColor("black")) # Ensure text is visible on yellow
-
-        # Use QTextDocument.find to iterate through matches
-        find_cursor = QTextCursor(document) # Start cursor at the beginning
-        first_match_cursor = None # To store the cursor of the first match
-
-        logging.debug(f"Highlighting term: '{search_term}'")
-        count = 0
+        """Highlight search terms in the preview pane using QScintilla search."""
+        # Get the current search text
+        search_text = self.search_box.text()
+        if not search_text:
+            # Clear any existing indicators if search is empty
+            self.preview_pane.clearIndicatorRange(0, 0, self.preview_pane.lines(), 0, 0)
+            return  # No search term to highlight
+            
+        # Use QScintilla's search and indicator mechanism
+        # First, define an indicator for search results
+        SEARCH_INDICATOR = 0  # Use indicator number 0
+        self.preview_pane.indicatorDefine(QsciScintilla.SquigglePixmapIndicator, SEARCH_INDICATOR)
+        self.preview_pane.setIndicatorForegroundColor(QColor("#4a4a0a"), SEARCH_INDICATOR)  # Yellow-ish background
+        
+        # Clear any existing indicators
+        self.preview_pane.clearIndicatorRange(0, 0, self.preview_pane.lines(), 0, 0)
+        
+        # Get the text to search within
+        text = self.preview_pane.text()
+        if not text:
+            return
+            
+        # Find all occurrences and highlight them
+        pos = 0
         while True:
-            # Find next occurrence (case-insensitive)
-            find_cursor = document.find(search_term, find_cursor, QTextDocument.FindFlag.FindCaseSensitively) # Use FindCaseSensitively? Or FindFlag() for case-insensitive? Let's try sensitive.
-
-            if find_cursor.isNull():
-                # No more matches found
+            # Find the next occurrence
+            pos = text.lower().find(search_text.lower(), pos)
+            if pos == -1:
                 break
-            else:
-                # Apply the highlight format to the found selection
-                find_cursor.mergeCharFormat(highlight_format)
-                count += 1
-                # Store the first match cursor to potentially scroll to it
-                if first_match_cursor is None:
-                    first_match_cursor = QTextCursor(find_cursor)
-                    first_match_cursor.clearSelection() # Don't keep it selected, just position
-
-        logging.debug(f"Found and highlighted {count} occurrences.")
-
-        # Scroll to the first match if found
-        if first_match_cursor:
-            self.preview_pane.setTextCursor(first_match_cursor)
-            self.preview_pane.ensureCursorVisible()
-            logging.debug("Scrolled to the first highlight match.")
-
+                
+            # Convert position to line and index
+            line, index = self._position_to_line_index(text, pos)
+            
+            # Set indicator for the found text
+            self.preview_pane.fillIndicatorRange(line, index, line, index + len(search_text), SEARCH_INDICATOR)
+            
+            # Move to position after this match
+            pos += len(search_text)
+            
+    def _position_to_line_index(self, text, position):
+        """Helper function to convert a flat position to line and index within that line."""
+        # Split text into lines
+        lines = text.split('\n')
+        
+        # Track position
+        current_pos = 0
+        for line_num, line in enumerate(lines):
+            line_length = len(line) + 1  # +1 for newline character
+            if current_pos + line_length > position:
+                # Found the line, calculate index within the line
+                index = position - current_pos
+                return line_num, index
+            current_pos += line_length
+            
+        # Default fallback (shouldn't reach here with valid input)
+        return 0, 0
 
     # --- Item Actions ---
     def handle_item_action(self, item: QListWidgetItem):
@@ -2151,17 +1999,17 @@ class FloatingBookmarksWindow(QMainWindow):
     @Slot()
     def handle_item_action_from_context(self):
         """Triggered by the 'Copy SQL' context menu action."""
-        if self.context_item:
+        if self.context_menu_item:
             logging.debug("Context menu 'Copy SQL' triggered.")
-            self.handle_item_action(self.context_item) # Reuse the main action handler
+            self.handle_item_action(self.context_menu_item) # Reuse the main action handler
         else:
             logging.warning("Context menu 'Copy SQL' triggered but context_item is None.")
 
     @Slot()
     def copy_bookmark_url_from_context(self):
         """Triggered by the 'Copy File URL' context menu action."""
-        if self.context_item:
-            data = self.context_item.data(Qt.ItemDataRole.UserRole)
+        if self.context_menu_item:
+            data = self.context_menu_item.data(Qt.ItemDataRole.UserRole)
             if isinstance(data, dict):
                 url = data.get('url', '')
                 if url:
@@ -2260,7 +2108,7 @@ class FloatingBookmarksWindow(QMainWindow):
     def show_context_menu(self, pos: QPoint):
         """Show the right-click context menu at the given position."""
         item = self.bookmark_list.itemAt(pos)
-        self.context_item = item # Store the item that was right-clicked
+        self.context_menu_item = item # Store the item that was right-clicked
         if item:
              # Enable/disable actions based on the item
              data = item.data(Qt.ItemDataRole.UserRole)
@@ -2274,7 +2122,7 @@ class FloatingBookmarksWindow(QMainWindow):
         else:
              # Right-clicked on empty area? Optionally show a limited menu or nothing.
              logging.debug("Right-click on empty list area, no context menu shown.")
-             self.context_item = None
+             self.context_menu_item = None
 
     @Slot()
     def clear_usage_counts(self):
@@ -2413,8 +2261,8 @@ class FloatingBookmarksWindow(QMainWindow):
         if os.path.isdir(path):
             try:
                 # Use QDesktopServices for better cross-platform compatibility
-                from PySide6.QtGui import QDesktopServices
-                from PySide6.QtCore import QUrl
+                from PyQt5.QtGui import QDesktopServices
+                from PyQt5.QtCore import QUrl
 
                 # Convert local path to a file URL
                 url = QUrl.fromLocalFile(os.path.normpath(path))
@@ -2499,76 +2347,690 @@ class FloatingBookmarksWindow(QMainWindow):
 
         logging.info("Application state saving process completed.")
 
-# --- Entry Point ---
-if __name__ == '__main__':
-    # Logging is already set up globally now
+    def load_queries_from_vault(self):
+        """Load queries from the internal query vault."""
+        self.query_vault.load_vault()
+        self.bookmarks = self.query_vault.get_queries()
+        self.update_bookmark_list()
+        logging.info("Queries loaded from internal query vault.")
+        self.setWindowTitle(f"{APP_NAME} - Internal Query Vault")
 
-    exit_code = 0 # Default exit code
-    try:
-        # **FIX:** Remove deprecated High DPI attributes for Qt >= 6
-        # High DPI scaling is generally handled automatically or via environment variables (e.g., QT_ENABLE_HIGHDPI_SCALING=1)
-        # QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-        # QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    def update_label_filter_dropdown(self):
+        """Update the label filter dropdown with all available labels."""
+        current_label = None
+        
+        # Store currently selected label if any
+        if hasattr(self, 'label_filter_combo') and self.label_filter_combo.currentIndex() > 0:
+            current_label = self.label_filter_combo.currentData()
+            
+        # Clear and add the default "All Labels" option
+        if hasattr(self, 'label_filter_combo'):
+            self.label_filter_combo.clear()
+            self.label_filter_combo.addItem("All Labels", None)
+        
+        # Get all unique labels from the appropriate source
+        all_labels = []
+        if self.current_data_source == SOURCE_INTERNAL:
+            all_labels = self.query_vault.get_all_labels()
+        else:
+            # For DataGrip mode, extract labels from loaded bookmarks
+            labels = set()
+            for bm in self.bookmarks:
+                if isinstance(bm, dict) and 'labels' in bm and isinstance(bm['labels'], list):
+                    labels.update(bm['labels'])
+            all_labels = sorted(list(labels))
+        
+        # Add all labels to the dropdown
+        if hasattr(self, 'label_filter_combo'):
+            for label in all_labels:
+                self.label_filter_combo.addItem(label, label)
+                
+            # Restore previously selected label if it still exists
+            if current_label:
+                index = self.label_filter_combo.findData(current_label)
+                if index >= 0:
+                    self.label_filter_combo.setCurrentIndex(index)
+                    
+            logging.debug(f"Updated label filter dropdown with {len(all_labels)} labels")
 
-        # Create the application instance
-        app = QApplication(sys.argv)
-        app.setQuitOnLastWindowClosed(False) # Prevent app exit when window hides to tray
+    def apply_label_filter(self, bookmarks):
+        """Filter bookmarks by selected label."""
+        if not hasattr(self, 'label_filter_combo'):
+            return bookmarks
+            
+        selected_label = self.label_filter_combo.currentData()
+        
+        # If no label filter active, return all bookmarks
+        if selected_label is None:
+            return bookmarks
+            
+        # Filter by the selected label
+        filtered = []
+        for bm in bookmarks:
+            if isinstance(bm, dict) and 'labels' in bm and isinstance(bm['labels'], list):
+                if selected_label in bm['labels']:
+                    filtered.append(bm)
+        
+        logging.debug(f"Label filter '{selected_label}' active: {len(filtered)}/{len(bookmarks)} queries matching")
+        return filtered
 
-        # --- Load Main Application Icon ---
-        main_icon = QIcon() # Start empty
-        icon_loaded = False
-        if os.path.exists(MAIN_ICON_FILE):
-            temp_icon = QIcon(MAIN_ICON_FILE)
-            if not temp_icon.isNull():
-                main_icon = temp_icon
-                icon_loaded = True
-                logging.info(f"Loaded main application icon from: {MAIN_ICON_FILE}")
+    @Slot()
+    def on_source_changed(self):
+        """Handle data source change."""
+        if not hasattr(self, 'source_combo'):
+            return
+            
+        new_source = self.source_combo.currentData()
+        if new_source == self.current_data_source:
+            return  # No change
+            
+        logging.info(f"Data source changing from {self.current_data_source} to {new_source}")
+        
+        # Save the new source setting
+        self.settings.set('data_source', new_source)
+        self.current_data_source = new_source
+        
+        # Load data from the appropriate source
+        if new_source == SOURCE_DATAGRIP:
+            # Load from DataGrip XML export
+            last_file = self.settings.get('loaded_copy_path')
+            if last_file and os.path.isfile(last_file):
+                self.load_bookmarks(last_file)
             else:
-                logging.warning(f"Main icon file exists ({MAIN_ICON_FILE}) but failed to load.")
-        if not icon_loaded:
-            # Fallback to a generic theme icon
-            theme_icon = QIcon.fromTheme("application-x-executable", QIcon.fromTheme("text-editor"))
-            if not theme_icon.isNull():
-                 main_icon = theme_icon
-                 icon_loaded = True
-                 logging.info("Using system theme icon as main application icon.")
+                # No file loaded yet
+                self.bookmarks = []
+                self.update_bookmark_list()
+                self.setWindowTitle(f"{APP_NAME} - DataGrip Mode (No File Loaded)")
+        else:
+            # Load from internal vault
+            self.load_queries_from_vault()
+            
+        # Update UI
+        self.update_label_filter_dropdown()
+        
+    def add_query_to_vault(self, title, sql_content, labels=None):
+        """Add a new query to the internal vault."""
+        if self.current_data_source != SOURCE_INTERNAL:
+            logging.warning("Cannot add query to vault: current source is not Internal Query Vault")
+            return False
+            
+        # Create query data structure
+        query_data = {
+            'title': title,
+            'sql_content': sql_content,
+            'labels': labels or [],
+            'count': 0
+        }
+        
+        # Add to vault
+        if self.query_vault.add_query(query_data):
+            # Save vault
+            self.query_vault.save_vault()
+            # Reload queries to refresh the list
+            self.load_queries_from_vault()
+            logging.info(f"Added new query '{title}' to vault")
+            return True
+        return False
+        
+    def edit_query_in_vault(self, query_id, title=None, sql_content=None, labels=None):
+        """Edit an existing query in the internal vault."""
+        if self.current_data_source != SOURCE_INTERNAL:
+            logging.warning("Cannot edit query in vault: current source is not Internal Query Vault")
+            return False
+            
+        # Get the current query data
+        current_query = self.query_vault.get_query_by_id(query_id)
+        if not current_query:
+            logging.warning(f"Cannot edit query: query with ID {query_id} not found")
+            return False
+            
+        # Update only the provided fields
+        if title is not None:
+            current_query['title'] = title
+        if sql_content is not None:
+            current_query['sql_content'] = sql_content
+        if labels is not None:
+            current_query['labels'] = labels
+            
+        # Update in vault
+        if self.query_vault.update_query(query_id, current_query):
+            # Save vault
+            self.query_vault.save_vault()
+            # Reload queries to refresh the list
+            self.load_queries_from_vault()
+            logging.info(f"Updated query with ID {query_id} in vault")
+            return True
+        return False
+        
+    def add_label_to_query_in_vault(self, query_id, label):
+        """Add a label to a query in the internal vault."""
+        if self.current_data_source != SOURCE_INTERNAL:
+            logging.warning("Cannot add label: current source is not Internal Query Vault")
+            return False
+            
+        if self.query_vault.add_label_to_query(query_id, label):
+            # Save vault
+            self.query_vault.save_vault()
+            # Reload queries to refresh the list
+            self.load_queries_from_vault()
+            logging.info(f"Added label '{label}' to query {query_id}")
+            return True
+        return False
+        
+    def remove_label_from_query_in_vault(self, query_id, label):
+        """Remove a label from a query in the internal vault."""
+        if self.current_data_source != SOURCE_INTERNAL:
+            logging.warning("Cannot remove label: current source is not Internal Query Vault")
+            return False
+            
+        if self.query_vault.remove_label_from_query(query_id, label):
+            # Save vault
+            self.query_vault.save_vault()
+            # Reload queries to refresh the list
+            self.load_queries_from_vault()
+            logging.info(f"Removed label '{label}' from query {query_id}")
+            return True
+        return False
+        
+    def delete_query_from_vault(self, query_id):
+        """Delete a query from the internal vault."""
+        if self.current_data_source != SOURCE_INTERNAL:
+            logging.warning("Cannot delete query: current source is not Internal Query Vault")
+            return False
+            
+        if self.query_vault.delete_query(query_id):
+            # Save vault
+            self.query_vault.save_vault()
+            # Reload queries to refresh the list
+            self.load_queries_from_vault()
+            logging.info(f"Deleted query with ID {query_id} from vault")
+            return True
+        return False
+        
+    def import_bookmark_to_vault(self, bookmark_data):
+        """Import a DataGrip bookmark into the internal vault."""
+        if not isinstance(bookmark_data, dict):
+            logging.warning("Cannot import bookmark: invalid data format")
+            return False
+            
+        # Get SQL content
+        sql_content = self.get_sql_content(bookmark_data)
+        if not sql_content:
+            logging.warning(f"Cannot import bookmark '{bookmark_data.get('title', 'Untitled')}': failed to retrieve SQL content")
+            return False
+            
+        # Create query data
+        query_data = {
+            'title': bookmark_data.get('title', 'Imported Query'),
+            'sql_content': sql_content,
+            'labels': ['Imported'],
+            'count': bookmark_data.get('count', 0)
+        }
+        
+        # Add to vault
+        if self.query_vault.add_query(query_data):
+            # Save vault
+            self.query_vault.save_vault()
+            logging.info(f"Imported bookmark '{query_data['title']}' to vault")
+            return True
+        return False
+
+    def get_sql_content(self, bookmark_data, sql_root=None, user_home=None, pre_resolved_path=None):
+        """Get SQL content from a bookmark data dict, handling both DataGrip bookmarks and internal queries."""
+        if not bookmark_data or not isinstance(bookmark_data, dict):
+            return ""
+            
+        # First check if this is an internal vault query with direct SQL content
+        if 'sql_content' in bookmark_data and bookmark_data['sql_content']:
+            return bookmark_data['sql_content']
+            
+        # If not, attempt to load from file (DataGrip bookmark)
+        url = bookmark_data.get('url', '')
+        if not url:
+            logging.warning(f"Bookmark '{bookmark_data.get('title', 'Untitled')}' has no URL.")
+            return ""
+            
+        # Use provided SQL root directory or get from settings
+        sql_root_dir = sql_root if sql_root else self.settings.get('sql_root_directory')
+        # Use provided user home or get from os.path
+        home_dir = user_home if user_home else os.path.expanduser("~")
+        
+        # If path already resolved (to avoid redundant work in multiple calls)
+        if pre_resolved_path and os.path.isfile(pre_resolved_path):
+            file_path = pre_resolved_path
+        else:
+            # Resolve the URL to a file path
+            file_path = self.resolve_file_path(url, sql_root=sql_root_dir, user_home=home_dir)
+            
+        # Read and return file content if resolved successfully
+        if file_path and os.path.isfile(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return content
+            except Exception as e:
+                logging.error(f"Failed to read SQL file '{file_path}': {e}", exc_info=True)
+                return f"// Error reading file: {e}"
+        else:
+            logging.warning(f"SQL file not found for bookmark '{bookmark_data.get('title', 'Untitled')}': {file_path}")
+            return "// File not found (check SQL root directory setting)"
+
+    def copy_current_query_to_clipboard(self):
+        """Copy the currently selected query to clipboard."""
+        current_item = self.bookmark_list.currentItem()
+        if current_item:
+            self.handle_item_action(current_item)
+        else:
+            logging.warning("No query selected to copy to clipboard")
+
+    def close_app(self):
+        """Close the application."""
+        self.save_state()
+        if self.tray_icon:
+            self.tray_icon.hide()
+        QApplication.instance().quit()
+
+    def init_context_menu(self):
+        """Initialize the context menu for the bookmark list."""
+        self.context_menu = QMenu(self)
+        
+        # Create actions for the context menu
+        self.copy_sql_action_context = QAction("Copy SQL", self)
+        self.copy_sql_action_context.triggered.connect(self.handle_item_action_from_context)
+        
+        self.copy_url_action_context = QAction("Copy File URL", self)
+        self.copy_url_action_context.triggered.connect(self.copy_bookmark_url_from_context)
+        
+        # Add basic copy actions first
+        self.context_menu.addAction(self.copy_sql_action_context)
+        self.context_menu.addAction(self.copy_url_action_context)
+        
+        # Additional actions
+        self.context_menu.addSeparator()
+        self.context_menu.addAction(self.edit_query_action_context)
+        self.context_menu.addAction(self.delete_query_action_context)
+        self.context_menu.addAction(self.manage_labels_action_context)
+        self.context_menu.addAction(self.import_to_vault_action_context)
+        
+        # Connect the context menu to the list widget
+        self.bookmark_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.bookmark_list.customContextMenuRequested.connect(self.show_context_menu)
+        
+        logging.info("Context menu initialized and connected.")
+
+    def apply_styles(self, is_dark=True):
+        """Apply stylesheet and visual styling to the application."""
+        if is_dark:
+            # Dark theme colors
+            colors = {
+                'bg': '#2d2d2d',
+                'text': '#ffffff',
+                'input_bg': '#3d3d3d',
+                'border': '#555555',
+                'selection': '#264f78',
+                'hover': '#404040',
+                'button': '#0078d4',
+                'button_hover': '#1084d8',
+                'button_pressed': '#006cbd',
+                'disabled': '#555555',
+                'disabled_text': '#888888',
+                'preview_bg': '#1e1e1e',
+                'preview_text': '#d4d4d4'
+            }
+        else:
+            # Light theme colors
+            colors = {
+                'bg': '#ffffff',
+                'text': '#000000',
+                'input_bg': '#f0f0f0',
+                'border': '#cccccc',
+                'selection': '#cce8ff',
+                'hover': '#e5e5e5',
+                'button': '#0078d4',
+                'button_hover': '#1084d8',
+                'button_pressed': '#006cbd',
+                'disabled': '#e0e0e0',
+                'disabled_text': '#666666',
+                'preview_bg': '#ffffff',
+                'preview_text': '#000000'
+            }
+
+        style_sheet = """
+            QMainWindow, QWidget {
+                background-color: %(bg)s;
+                color: %(text)s;
+            }
+            QLineEdit {
+                background-color: %(input_bg)s;
+                color: %(text)s;
+                border: 1px solid %(border)s;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QListWidget {
+                background-color: %(bg)s;
+                color: %(text)s;
+                border: 1px solid %(border)s;
+                border-radius: 3px;
+            }
+            QListWidget::item {
+                padding: 5px;
+            }
+            QListWidget::item:selected {
+                background-color: %(selection)s;
+                color: %(text)s;
+            }
+            QListWidget::item:hover {
+                background-color: %(hover)s;
+            }
+            QPushButton {
+                background-color: %(button)s;
+                color: #ffffff;
+                border: none;
+                border-radius: 3px;
+                padding: 5px 15px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: %(button_hover)s;
+            }
+            QPushButton:pressed {
+                background-color: %(button_pressed)s;
+            }
+            QPushButton:disabled {
+                background-color: %(disabled)s;
+                color: %(disabled_text)s;
+            }
+            QLabel {
+                color: %(text)s;
+            }
+            QMenuBar {
+                background-color: %(bg)s;
+                color: %(text)s;
+            }
+            QMenuBar::item {
+                background-color: transparent;
+                padding: 4px 10px;
+            }
+            QMenuBar::item:selected {
+                background-color: %(hover)s;
+            }
+            QMenu {
+                background-color: %(bg)s;
+                color: %(text)s;
+                border: 1px solid %(border)s;
+            }
+            QMenu::item {
+                padding: 5px 20px;
+            }
+            QMenu::item:selected {
+                background-color: %(hover)s;
+            }
+            QSplitter::handle {
+                background-color: %(border)s;
+            }
+            QComboBox {
+                background-color: %(input_bg)s;
+                color: %(text)s;
+                border: 1px solid %(border)s;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: %(bg)s;
+                color: %(text)s;
+                selection-background-color: %(selection)s;
+            }
+            QRadioButton {
+                color: %(text)s;
+                spacing: 5px;
+            }
+            QRadioButton::indicator {
+                width: 13px;
+                height: 13px;
+            }
+            QRadioButton::indicator:unchecked {
+                background-color: %(input_bg)s;
+                border: 2px solid %(border)s;
+                border-radius: 7px;
+            }
+            QRadioButton::indicator:checked {
+                background-color: %(button)s;
+                border: 2px solid %(button)s;
+                border-radius: 7px;
+            }
+            #bookmark_count_label {
+                color: %(disabled_text)s;
+                padding-right: 10px;
+            }
+            #hide_button {
+                background-color: %(button)s;
+            }
+            #hide_button:hover {
+                background-color: %(button_hover)s;
+            }
+            #custom_close_button {
+                background-color: #c42b1c;
+            }
+            #custom_close_button:hover {
+                background-color: #d13438;
+            }
+        """ % colors
+        
+        self.setStyleSheet(style_sheet)
+        
+        # Apply theme to QScintilla preview pane
+        if hasattr(self, 'preview_pane'):
+            bg_col = QColor(colors['preview_bg'])
+            fg_col = QColor(colors['preview_text'])
+            self.preview_pane.setColor(fg_col)  # Default text color
+            self.preview_pane.setPaper(bg_col)  # Background color
+            self.preview_pane.setMarginsBackgroundColor(bg_col)
+            self.preview_pane.setMarginsForegroundColor(fg_col)
+
+            # Ensure QScintilla lexer adopts the same palette
+            if hasattr(self, 'sql_lexer') and self.sql_lexer:
+                self.sql_lexer.setDefaultColor(fg_col)
+                self.sql_lexer.setDefaultPaper(bg_col)
+                for style_idx in range(128):
+                    if self.sql_lexer.description(style_idx):
+                        self.sql_lexer.setColor(fg_col, style_idx)
+                        self.sql_lexer.setPaper(bg_col, style_idx)
+
+        logging.info(f"Applied {'dark' if is_dark else 'light'} theme styles.")
+
+    def toggle_theme(self):
+        """Toggle between light and dark theme."""
+        # Check current theme state from the action
+        is_dark = self.toggle_theme_action.isChecked()
+        # Apply the appropriate theme
+        self.apply_styles(is_dark=is_dark)
+        # Save the theme preference in settings
+        self.settings.set('dark_theme', is_dark)
+        logging.info(f"Theme toggled to {'dark' if is_dark else 'light'} mode")
+
+    @Slot()
+    def edit_query(self):
+        """Placeholder for editing the selected query/bookmark."""
+        if self.context_menu_item:
+            data = self.context_menu_item.data(Qt.ItemDataRole.UserRole)
+            title = data.get('title', 'Untitled') if isinstance(data, dict) else 'Untitled'
+            logging.info(f"Edit requested for item: {title}")
+            QMessageBox.information(self, "Edit Query", "The edit feature is not implemented yet.")
+        else:
+            logging.warning("edit_query triggered but no context_menu_item is set.")
+            QMessageBox.information(self, "Edit Query", "Please right-click a query and choose Edit to modify it.")
+
+    @Slot()
+    def delete_query(self):
+        """Delete the selected query from its source after confirmation."""
+        if not self.context_menu_item:
+            logging.warning("delete_query triggered but no context_menu_item is set.")
+            return
+
+        data = self.context_menu_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            logging.warning("delete_query: item data is invalid or not a dict.")
+            return
+
+        title = data.get('title', 'Untitled')
+        query_id = data.get('id')
+
+        reply = QMessageBox.question(
+            self,
+            "Delete Query",
+            f"Are you sure you want to delete '{title}'? This action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Delete depending on current data source
+        if self.current_data_source == SOURCE_INTERNAL:
+            if query_id and self.delete_query_from_vault(query_id):
+                QMessageBox.information(self, "Delete", f"'{title}' has been deleted.")
             else:
-                 logging.warning("Could not load main icon from file or theme.")
+                QMessageBox.warning(self, "Delete Failed", "Could not delete the selected query.")
+        else:
+            QMessageBox.warning(self, "Delete Not Supported", "Deleting is only supported for Internal Query Vault items.")
 
-        if icon_loaded:
-             app.setWindowIcon(main_icon)
-        # --- End Load Main Icon ---
+    @Slot()
+    def manage_labels(self):
+        """Placeholder to manage labels for the selected query."""
+        QMessageBox.information(self, "Manage Labels", "Label management is not implemented yet.")
+        logging.info("manage_labels called but not yet implemented.")
 
-        # Initialize settings and usage counts handlers
-        app_settings = AppSettings()
-        usage_counts_data = UsageCounts()
+    @Slot()
+    def import_to_vault(self):
+        """Import a DataGrip bookmark into the internal vault."""
+        if not self.context_menu_item:
+            logging.warning("import_to_vault triggered but no context_menu_item is set.")
+            return
 
-        # Create and show the main window
-        window = FloatingBookmarksWindow(app_settings, usage_counts_data)
-        # Window calls self.show() in its __init__
+        data = self.context_menu_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            logging.warning("import_to_vault: item data is invalid or not a dict.")
+            return
 
-        # Start the Qt event loop
-        logging.info("Starting Qt application event loop...")
-        exit_code = app.exec()
-        logging.info(f"Qt application event loop finished. Exit code: {exit_code}.")
+        title = data.get('title', 'Untitled')
+        if self.current_data_source == SOURCE_DATAGRIP:
+            if self.import_bookmark_to_vault(data):
+                QMessageBox.information(self, "Import Successful", f"'{title}' has been imported to the Internal Query Vault.")
+            else:
+                QMessageBox.warning(self, "Import Failed", "Failed to import the selected bookmark to the vault. Check logs for details.")
+        else:
+            QMessageBox.information(self, "Already in Vault", "The selected query is already in the Internal Query Vault.")
 
-    except Exception as e:
-        # Catch any unhandled exceptions at the top level
-        logging.critical(f"Unhandled top-level exception occurred: {e}", exc_info=True)
-        # Try to show a message box, but this might fail if Qt isn't running
-        try:
-            QMessageBox.critical(
-                None, # No parent window
-                "Fatal Application Error",
-                f"An unhandled error occurred and the application must close:\n\n{e}\n\nPlease check the log file for details:\n{LOG_FILE}"
-            )
-        except Exception as msg_e:
-            # Fallback to printing if message box fails
-            print(f"FATAL APPLICATION ERROR: {e}", file=sys.stderr)
-            print(f"Log File: {LOG_FILE}", file=sys.stderr)
-            print(f"(Error showing message box: {msg_e})", file=sys.stderr)
-        exit_code = 1 # Indicate an error exit
+    def resolve_file_path(self, url_string, sql_root=None, user_home=None):
+        """Resolve JetBrains-style URL placeholders and return a valid file path if it exists.
 
-    finally:
-        logging.info("="*20 + f" {APP_NAME} End " + "="*20 + f" (Exit Code: {exit_code})")
-        sys.exit(exit_code) # Ensure the script exits with the correct code
+        Parameters
+        ----------
+        url_string : str
+            The raw URL string stored in a DataGrip bookmark (may start with 'file://', or contain
+            placeholders like $PROJECT_DIR$).
+        sql_root : str, optional
+            Override for the SQL root directory. Falls back to the setting 'sql_root_directory'.
+        user_home : str, optional
+            Override for the user's home directory. Defaults to os.path.expanduser("~").
+
+        Returns
+        -------
+        str | None
+            The resolved absolute path if the file exists on disk, otherwise None.
+        """
+        if not url_string:
+            return None
+
+        from urllib.parse import urlparse, unquote
+
+        # Determine directories to substitute
+        sql_root_dir = sql_root if sql_root is not None else self.settings.get('sql_root_directory')
+        home_dir = user_home if user_home is not None else os.path.expanduser("~")
+
+        # Start with the raw string
+        path_str = str(url_string)
+
+        # Strip URI scheme if present
+        if path_str.startswith("file://"):
+            path_str = unquote(urlparse(path_str).path)
+            # On Windows, remove leading slash before drive letter (e.g. /C:/.. -> C:/..)
+            if os.name == 'nt' and path_str.startswith('/') and len(path_str) > 2 and path_str[2] == ':':
+                path_str = path_str[1:]
+
+        # Replace JetBrains placeholders
+        if sql_root_dir:
+            path_str = path_str.replace("$PROJECT_DIR$", sql_root_dir)
+        path_str = path_str.replace("$USER_HOME$", home_dir)
+
+        # If still relative, join with sql_root_dir if available
+        if not os.path.isabs(path_str):
+            if sql_root_dir:
+                candidate = os.path.normpath(os.path.join(sql_root_dir, path_str))
+            else:
+                candidate = os.path.abspath(path_str)
+        else:
+            candidate = os.path.normpath(path_str)
+
+        return candidate if os.path.isfile(candidate) else None
+
+    @Slot()
+    def set_sql_root_directory(self):
+        """Prompt user to select the root directory that replaces $PROJECT_DIR$ placeholders."""
+        current_root = self.settings.get('sql_root_directory', os.path.expanduser("~"))
+        dir_path = QFileDialog.getExistingDirectory(self, "Select SQL Root Directory", current_root)
+        if dir_path:
+            self.settings.set('sql_root_directory', dir_path)
+            QMessageBox.information(self, "SQL Root Directory Set", f"Queries will resolve $PROJECT_DIR$ to:\n{dir_path}")
+            logging.info(f"SQL root directory updated to: {dir_path}")
+
+    @Slot()
+    def show_about_dialog(self):
+        """Display an About dialog with basic app information."""
+        QMessageBox.about(
+            self,
+            f"About {APP_NAME}",
+            (
+                f"<b>{APP_NAME} – Dynamic Query Vault</b><br><br>"
+                "A tool to browse DataGrip export bookmarks and your own internal SQL vault, "
+                "copy queries quickly, and manage labels.<br><br>"
+                "Version: 0.1.0 (alpha)"
+            ),
+        )
+
+    @Slot(bool)
+    def toggle_preview_editable(self, checked=False):
+        """Sync preview pane editability with checkbox/menu."""
+        # `checked` may be omitted when the slot is invoked without parameters.
+        checked_bool = bool(checked)
+
+        self.preview_pane.setReadOnly(not checked_bool)
+
+        # Sync counterparts without recursion
+        if hasattr(self, 'toggle_edit_action') and self.toggle_edit_action.isChecked() != checked_bool:
+            self.toggle_edit_action.blockSignals(True)
+            self.toggle_edit_action.setChecked(checked_bool)
+            self.toggle_edit_action.blockSignals(False)
+
+        if hasattr(self, 'edit_toggle_checkbox') and self.edit_toggle_checkbox.isChecked() != checked_bool:
+            self.edit_toggle_checkbox.blockSignals(True)
+            self.edit_toggle_checkbox.setChecked(checked_bool)
+            self.edit_toggle_checkbox.blockSignals(False)
+
+        logging.info(f"Preview pane edit mode {'ON' if checked_bool else 'OFF'}.")
+
+    @Slot()
+    def add_new_query(self):
+        # Implement the logic for adding a new query
+        logging.info("Add new query functionality not implemented yet.")
+        QMessageBox.information(self, "Add New Query", "This functionality is not implemented yet.")
+
+if __name__ == "__main__":
+    import sys
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication(sys.argv)
+    viewer = FloatingBookmarksWindow(AppSettings(), UsageCounts())
+    viewer.show()
+    sys.exit(app.exec_())
